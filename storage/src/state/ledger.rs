@@ -36,6 +36,7 @@ use std::{
     },
     thread,
     thread::JoinHandle,
+    time::Instant,
 };
 
 /// The maximum number of linear block locators.
@@ -616,8 +617,10 @@ impl<N: Network> LedgerState<N> {
         let ledger_root = self.latest_ledger_root();
 
         // Craft a coinbase transaction.
+        let new_coinbase_start = Instant::now();
         let amount = Block::<N>::block_reward(block_height);
         let (coinbase_transaction, coinbase_record) = Transaction::<N>::new_coinbase(recipient, amount, is_public, rng)?;
+        trace!("Execute coinbase transaction time: {:?}, height: {}, timestamp: {}, difficulty: {}, weight: {}", new_coinbase_start.elapsed(), block_height, block_timestamp, difficulty_target, cumulative_weight);
 
         // Filter the transactions to ensure they are new, and append the coinbase transaction.
         // TODO (howardwu): Improve the performance and design of this.

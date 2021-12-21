@@ -2067,6 +2067,7 @@ dependencies = [
  "snarkvm-r1cs 0.7.5",
  "snarkvm-utilities 0.7.5",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
