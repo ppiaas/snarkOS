@@ -31,7 +31,7 @@ bytes = "1.0.0"
 futures = { version = "0.3.19", features = ["thread-pool"]}
 
 crossterm = { version = "0.22" }
-tui = { version = "0.16.0", features = ["crossterm"] }
+tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 
 [dependencies.snarkos-storage]
 path = "./storage"
@@ -93,6 +93,12 @@ version = "1"
 
 [dependencies.self_update]
 version = "0.28"
+features = [
+  "archive-zip",
+  "compression-zip-bzip2",
+  "compression-zip-deflate",
+  "compression-flate2"
+]
 
 [dependencies.serde]
 version = "1"
