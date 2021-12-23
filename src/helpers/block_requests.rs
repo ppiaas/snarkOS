@@ -202,7 +202,7 @@ pub(crate) fn handle_block_requests<N: Network, E: Environment>(
         else {
             // Case 2(c)(a) - If the common ancestor is within the fork range of this ledger, proceed to switch to the fork.
             if latest_block_height.saturating_sub(maximum_common_ancestor) <= E::MAXIMUM_FORK_DEPTH {
-                info!("Discovered a canonical chain from {} with common ancestor {} and cumulative weight {}", maximal_peer, maximum_common_ancestor, maximum_cumulative_weight);
+                info!("Discovered a canonical chain from {} with common ancestor {} and cumulative weight {} and block height: {}, compared to latest block height {} and cumulative weight {}", maximal_peer, maximum_common_ancestor, maximum_cumulative_weight, maximum_block_height, latest_block_height, latest_cumulative_weight);
                 // If the latest block is the same as the maximum common ancestor, do not revert.
                 (Case::TwoCA, maximum_common_ancestor, latest_block_height != maximum_common_ancestor)
             }
@@ -217,7 +217,7 @@ pub(crate) fn handle_block_requests<N: Network, E: Environment>(
                 // Case 2(c)(b)(b) - You don't know if your real common ancestor is within `MAXIMUM_FORK_DEPTH`.
                 // Revert to the common ancestor anyways.
                 else {
-                    info!("Discovered a potentially better canonical chain from {} with common ancestor {} and cumulative weight {}", maximal_peer, maximum_common_ancestor, maximum_cumulative_weight);
+                    info!("Discovered a potentially better canonical chain from {} with common ancestor {} and cumulative weight {} and block height: {}, compared to latest block height {} and cumulative weight {}, first deviating locator {}", maximal_peer, maximum_common_ancestor, maximum_cumulative_weight, maximum_block_height, latest_block_height, latest_cumulative_weight, first_deviating_locator);
                     (Case::TwoCBB, maximum_common_ancestor, true)
                 }
             }
