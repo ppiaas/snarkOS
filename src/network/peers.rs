@@ -33,7 +33,7 @@ use futures::SinkExt;
 use rand::{prelude::IteratorRandom, rngs::OsRng, thread_rng, Rng};
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -1161,9 +1161,14 @@ impl<N: Network, E: Environment> Peer<N, E> {
                                     }));
                                 }
                                 Message::UnconfirmedBlock(block_height, block_hash, block) => {
+                                    let is_peer_global = match peer_ip.ip() {
+                                        IpAddr::V4(ip) => !ip.is_private() && !ip.is_loopback() && !ip.is_link_local(),
+                                        IpAddr::V6(ip) => !ip.is_loopback(),
+                                    };
+
                                     // Drop the peer, if they have sent more than 5 unconfirmed blocks in the last 5 seconds.
                                     let frequency = peer.seen_inbound_blocks.values().filter(|t| t.elapsed().unwrap().as_secs() <= 5).count();
-                                    if frequency >= 10 {
+                                    if frequency >= 10 && is_peer_global {
                                         warn!("Dropping {} for spamming unconfirmed blocks (frequency = {})", peer_ip, frequency);
                                         // Send a `PeerRestricted` message.
                                         if let Err(error) = peers_router.send(PeersRequest::PeerRestricted(peer_ip)).await {
@@ -1190,9 +1195,20 @@ impl<N: Network, E: Environment> Peer<N, E> {
                                     // Ensure the node is not peering.
                                     let is_node_ready = !local_status.is_peering();
 
+                                    fn is_global_block_routing_enabled() -> bool {
+                                        std::env::var("ALEO_GLOBAL_BLOCK_ROUTING_ENABLED")
+                                            .and_then(|v| match v.parse() {
+                                                Ok(val) => Ok(val),
+                                                Err(_) => Ok(false),
+                                            })
+                                            .unwrap_or(false)
+                                    }
+
                                     // If this node is a beacon or sync node, skip this message, after updating the timestamp.
                                     if E::NODE_TYPE == NodeType::Beacon || E::NODE_TYPE == NodeType::Sync || !is_router_ready || !is_within_range || !is_node_ready {
                                         trace!("Skipping 'UnconfirmedBlock {}' from {}", block_height, peer_ip)
+                                    } else if is_peer_global && !is_global_block_routing_enabled() {
+                                        trace!("Skipping 'UnconfirmedBlock {}' from Global Peer {}", block_height, peer_ip)
                                     } else {
                                         // Perform the deferred non-blocking deserialization of the block.
                                         let request = match block.deserialize().await {
