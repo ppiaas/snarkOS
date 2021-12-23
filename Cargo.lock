@@ -1946,6 +1946,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rayon",
+ "reqwest",
  "rusty-hook",
  "self_update",
  "serde",
