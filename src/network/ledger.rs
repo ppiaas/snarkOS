@@ -168,7 +168,15 @@ impl<N: Network, E: Environment> Ledger<N, E> {
         peers_router: PeersRouter<N, E>,
     ) -> Result<Arc<Self>> {
         // Initialize an mpsc channel for sending requests to the `Ledger` struct.
-        let (ledger_router, mut ledger_handler) = mpsc::channel(1024);
+
+        let buf_size = match std::env::var("LEDGER_BUF_SIZE") {
+            Ok(u) => u.parse::<usize>().expect("env LEDGER_BUF_SIZE is invalid"),
+            Err(_) => 2048,
+        };
+
+        info!("ledger handler channel buff size: {}", buf_size);
+
+        let (ledger_router, mut ledger_handler) = mpsc::channel(buf_size);
 
         // Initialize the ledger.
         let ledger = Arc::new(Self {
