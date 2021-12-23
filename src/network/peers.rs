@@ -123,7 +123,15 @@ impl<N: Network, E: Environment> Peers<N, E> {
         local_status: &Status,
     ) -> Arc<Self> {
         // Initialize an mpsc channel for sending requests to the `Peers` struct.
-        let (peers_router, mut peers_handler) = mpsc::channel(1024);
+
+        let buf_size = match std::env::var("PEER_BUF_SIZE") {
+            Ok(u) => u.parse::<usize>().expect("env PEER_BUF_SIZE is invalid"),
+            Err(_) => 2048,
+        };
+
+        info!("peer handler channel buff size: {}", buf_size);
+
+        let (peers_router, mut peers_handler) = mpsc::channel(buf_size);
 
         // Sample the nonce.
         let local_nonce = match local_nonce {
