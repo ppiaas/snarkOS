@@ -205,7 +205,7 @@ impl<N: Network, E: Environment> Prover<N, E> {
                                         let amount = Block::<N>::block_reward(block_height);
 
                                         let (coinbase_transaction, coinbase_record) = if let Some(coinbase_template) = coinbase_template {
-                                            trace!("Reuse coinbase transaction");
+                                            trace!("Reuse coinbase transaction {}, height {}", coinbase_template.transaction.transaction_id(), block_height);
                                             (coinbase_template.transaction, coinbase_template.record)
                                         } else {
                                             Transaction::<N>::new_coinbase(recipient, amount, E::COINBASE_IS_PUBLIC, &mut thread_rng()).expect("coinbase transaction")
@@ -237,7 +237,7 @@ impl<N: Network, E: Environment> Prover<N, E> {
                                             },
                                             Err(error) => {
                                                 trace!("Unable to mine the next block: {}", error);
-                                                Err((Transaction::from(coinbase_transaction_inner_circuit_id, coinbase_transaction_ledger_root, coinbase_transaction_transitions).expect("transaction"), coinbase_record))
+                                                Err((Transaction::from(coinbase_transaction_inner_circuit_id, coinbase_transaction_ledger_root, coinbase_transaction_transitions).expect("transaction"), coinbase_record, block_height))
                                             },
                                         }
                                     })
@@ -262,8 +262,8 @@ impl<N: Network, E: Environment> Prover<N, E> {
                                             warn!("Failed to broadcast mined block - {}", error);
                                         }
                                     },
-                                    Ok(Err((coinbase_transaction, coinbase_record))) => {
-                                        trace!("Save coinbase transaction for reuse");
+                                    Ok(Err((coinbase_transaction, coinbase_record, block_height))) => {
+                                        trace!("Save coinbase transaction {}, height {}", coinbase_transaction.transaction_id(), block_height);
                                         *prover.coinbase_template.write().await = Some(CoinbaseTemplate{
                                             transaction: coinbase_transaction,
                                             record: coinbase_record,
