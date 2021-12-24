@@ -18,10 +18,11 @@ use crate::{network::ledger::PeersState, Environment};
 use snarkos_storage::{BlockLocators, LedgerState};
 use snarkvm::dpc::prelude::*;
 
-use std::{collections::HashSet, net::SocketAddr};
+use std::{collections::HashSet, net::{IpAddr, SocketAddr}};
 
 /// Checks if any of the peers are ahead and have a larger block height, if they are on a fork, and their block locators.
 /// The maximum known block height and cumulative weight are tracked for the purposes of further operations.
+/// Internal maximal peer first strategy, only follows global maximal peer when there is no internal maximal peer found.
 pub fn find_maximal_peer<N: Network, E: Environment>(
     peers_state: &PeersState<N>,
     maximum_block_height: &mut u32,
@@ -37,6 +38,9 @@ pub fn find_maximal_peer<N: Network, E: Environment>(
     // }
 
     let mut maximal_peer = None;
+    let mut maximal_global_peer = None;
+    let mut maximum_global_block_height = *maximum_block_height;
+    let mut maximum_global_cumulative_weight = *maximum_cumulative_weight;
 
     for (peer_ip, peer_state) in peers_state.iter() {
         // Only update the maximal peer if there are no sync nodes or the peer is a sync node.
@@ -51,13 +55,30 @@ pub fn find_maximal_peer<N: Network, E: Environment>(
                 };
                 // If the cumulative weight is more, set this peer as the maximal peer.
                 if cumulative_weight > *maximum_cumulative_weight && is_on_fork.is_some() {
-                    maximal_peer = Some((*peer_ip, is_on_fork.unwrap(), block_locators.clone()));
-                    *maximum_block_height = *block_height;
-                    *maximum_cumulative_weight = cumulative_weight;
+                    let is_peer_global = match peer_ip.ip() {
+                        IpAddr::V4(ip) => !ip.is_private() && !ip.is_loopback() && !ip.is_link_local(),
+                        IpAddr::V6(ip) => !ip.is_loopback(),
+                    };
+                    if is_peer_global {
+                        maximal_global_peer = Some((*peer_ip, is_on_fork.unwrap(), block_locators.clone()));
+                        maximum_global_block_height = *block_height;
+                        maximum_global_cumulative_weight = cumulative_weight;
+                    } else {
+                        maximal_peer = Some((*peer_ip, is_on_fork.unwrap(), block_locators.clone()));
+                        *maximum_block_height = *block_height;
+                        *maximum_cumulative_weight = cumulative_weight;
+                    }
                 }
             }
         }
     }
+
+    if maximal_peer.is_none() && maximal_global_peer.is_some() {
+        maximal_peer = maximal_global_peer;
+        *maximum_block_height = maximum_global_block_height;
+        *maximum_cumulative_weight = maximum_global_cumulative_weight;
+    }
+    
 
     maximal_peer
 }
