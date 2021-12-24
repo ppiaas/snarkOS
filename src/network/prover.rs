@@ -38,6 +38,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Instant
 };
 use tokio::{
     sync::{mpsc, oneshot, RwLock},
@@ -85,6 +86,14 @@ pub struct Prover<N: Network, E: Environment> {
     ledger_reader: LedgerReader<N>,
     /// The ledger router of the node.
     ledger_router: LedgerRouter<N>,
+    /// The current coinbase transaction template that is being mined on by the operator.
+    coinbase_template: RwLock<Option<CoinbaseTemplate<N>>>,
+}
+
+#[derive(Clone, Debug)]
+struct CoinbaseTemplate<N: Network> {
+    pub transaction: Transaction<N>,
+    pub record: Record<N>,
 }
 
 impl<N: Network, E: Environment> Prover<N, E> {
@@ -119,6 +128,7 @@ impl<N: Network, E: Environment> Prover<N, E> {
             peers_router,
             ledger_reader,
             ledger_router,
+            coinbase_template: RwLock::new(None),
         });
 
         // Initialize the handler for the prover.
@@ -158,33 +168,88 @@ impl<N: Network, E: Environment> Prover<N, E> {
                             let state = prover.state.clone();
                             let miner = prover.miner.clone();
                             let canon = prover.ledger_reader.clone(); // This is *safe* as the ledger only reads.
-                            let unconfirmed_transactions = prover.memory_pool.read().await.transactions();
+                            let _unconfirmed_transactions = prover.memory_pool.read().await.transactions();
                             let terminator = prover.terminator.clone();
                             let status = prover.status.clone();
                             let ledger_router = prover.ledger_router.clone();
                             let prover_router = prover.prover_router.clone();
+                            let prover = prover.clone();
 
                             tasks_clone.append(task::spawn(async move {
+                                let coinbase_template = prover.coinbase_template.read().await.clone(); 
+
                                 // Mine the next block.
                                 let result = task::spawn_blocking(move || {
                                     miner.install(move || {
-                                        canon.mine_next_block(
-                                            recipient,
-                                            E::COINBASE_IS_PUBLIC,
-                                            &unconfirmed_transactions,
+                                        // Prepare the new block.
+                                        let previous_block_hash = canon.latest_block_hash();
+                                        let block_height = canon.latest_block_height() + 1;
+                                
+                                        // Compute the block difficulty target.
+                                        let previous_timestamp = canon.latest_block_timestamp();
+                                        let previous_difficulty_target = canon.latest_block_difficulty_target();
+                                
+                                        // Ensure that the new timestamp is ahead of the previous timestamp.
+                                        let block_timestamp = std::cmp::max(chrono::Utc::now().timestamp(), previous_timestamp.saturating_add(1));
+                                
+                                        let difficulty_target = Blocks::<N>::compute_difficulty_target(previous_timestamp, previous_difficulty_target, block_timestamp);
+                                        let cumulative_weight = canon
+                                            .latest_cumulative_weight()
+                                            .saturating_add((u64::MAX / difficulty_target) as u128);
+                                
+                                        // Construct the ledger root.
+                                        let ledger_root = canon.latest_ledger_root();
+
+                                        // Craft a coinbase transaction.
+                                        let new_coinbase_start = Instant::now();
+                                        let amount = Block::<N>::block_reward(block_height);
+
+                                        let (coinbase_transaction, coinbase_record) = if let Some(coinbase_template) = coinbase_template {
+                                            trace!("Reuse coinbase transaction {}, height {}", coinbase_template.transaction.transaction_id(), block_height);
+                                            (coinbase_template.transaction, coinbase_template.record)
+                                        } else {
+                                            Transaction::<N>::new_coinbase(recipient, amount, E::COINBASE_IS_PUBLIC, &mut thread_rng()).expect("coinbase transaction")
+                                        };
+                                        
+                                        let coinbase_transaction_inner_circuit_id = coinbase_transaction.inner_circuit_id();
+                                        let coinbase_transaction_ledger_root = coinbase_transaction.ledger_root();
+                                        let coinbase_transaction_transitions = coinbase_transaction.transitions().clone();
+
+                                        trace!("Execute coinbase transaction time: {:?}, height: {}, timestamp: {}, difficulty: {}, weight: {}", new_coinbase_start.elapsed(), block_height, block_timestamp, difficulty_target, cumulative_weight);
+                                        
+                                        // Construct the new block transactions.
+                                        let transactions = Transactions::from(&[coinbase_transaction]).expect("Failed to");
+                                        
+                                        // Mine the next block.
+                                        match Block::mine(
+                                            previous_block_hash,
+                                            block_height,
+                                            block_timestamp,
+                                            difficulty_target,
+                                            cumulative_weight,
+                                            ledger_root,
+                                            transactions,
                                             &terminator,
                                             &mut thread_rng(),
-                                        )
+                                        ) {
+                                            Ok(block) => {
+                                                Ok((block, coinbase_record))
+                                            },
+                                            Err(error) => {
+                                                trace!("Unable to mine the next block: {}", error);
+                                                Err((Transaction::from(coinbase_transaction_inner_circuit_id, coinbase_transaction_ledger_root, coinbase_transaction_transitions).expect("transaction"), coinbase_record, block_height))
+                                            },
+                                        }
                                     })
                                 })
-                                .await
-                                .map_err(|e| e.into());
+                                .await;
 
                                 // Set the status to `Ready`.
                                 status.update(State::Ready);
 
                                 match result {
                                     Ok(Ok((block, coinbase_record))) => {
+                                        *prover.coinbase_template.write().await = None;
                                         debug!("Miner has found unconfirmed block {} ({})", block.height(), block.hash());
                                         // Store the coinbase record.
                                         if let Err(error) = state.add_coinbase_record(block.height(), coinbase_record) {
@@ -196,8 +261,15 @@ impl<N: Network, E: Environment> Prover<N, E> {
                                         if let Err(error) = ledger_router.send(request).await {
                                             warn!("Failed to broadcast mined block - {}", error);
                                         }
-                                    }
-                                    Ok(Err(error)) | Err(error) => trace!("{}", error),
+                                    },
+                                    Ok(Err((coinbase_transaction, coinbase_record, block_height))) => {
+                                        trace!("Save coinbase transaction {}, height {}", coinbase_transaction.transaction_id(), block_height);
+                                        *prover.coinbase_template.write().await = Some(CoinbaseTemplate{
+                                            transaction: coinbase_transaction,
+                                            record: coinbase_record,
+                                        });
+                                    },
+                                    Err(error) => trace!("{}", error),
                                 }
                             }));
                         }
