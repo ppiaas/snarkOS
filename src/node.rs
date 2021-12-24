@@ -42,7 +42,7 @@ use tracing_subscriber::EnvFilter;
 pub struct Node {
     /// Specify the IP address and port of a peer to connect to.
     #[structopt(long = "connect")]
-    pub connect: Option<String>,
+    pub connect: Option<Vec<String>>,
     /// Specify this as a mining node, with the given miner address.
     #[structopt(long = "miner")]
     pub miner: Option<String>,
@@ -164,8 +164,10 @@ impl Node {
         };
 
         // Connect to a peer if one was given as an argument.
-        if let Some(peer_ip) = &self.connect {
-            let _ = server.connect_to(peer_ip.parse().unwrap()).await;
+        if let Some(peer_ips) = &self.connect {
+            for peer_ip in peer_ips.iter() {
+                let _ = server.connect_to(peer_ip.parse().unwrap()).await;
+            }
         }
 
         // Note: Do not move this. The pending await must be here otherwise
