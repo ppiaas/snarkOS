@@ -161,6 +161,8 @@ impl<N: Network> Environment for MinerTrial<N> {
         "159.223.124.150:4132", "137.184.192.155:4132", "147.182.213.228:4132", "137.184.202.162:4132", "159.223.118.35:4132",
         "161.35.106.91:4132", "157.245.133.62:4132", "143.198.166.150:4132",
     ];
+    const HEARTBEAT_IN_SECS: u64 = Self::PING_SLEEP_IN_SECS/2;
+    const PING_SLEEP_IN_SECS: u64 = (N::ALEO_BLOCK_TIME_IN_SECS/2) as u64;
     const MINIMUM_NUMBER_OF_PEERS: usize = 11;
     const MAXIMUM_NUMBER_OF_PEERS: usize = 129;
     const COINBASE_IS_PUBLIC: bool = true;
