@@ -981,7 +981,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
     async fn remove_block_request(&self, peer_ip: SocketAddr, block_height: u32) -> bool {
         // Ensure the block height corresponds to a requested block.
         if !self.contains_block_request(peer_ip, block_height).await {
-            self.add_failure(peer_ip, "Received an invalid block response".to_string()).await;
+            self.add_failure(peer_ip, format!("Received an invalid block response {}", block_height)).await;
             false
         } else {
             if let Some(requests) = self.block_requests.write().await.get_mut(&peer_ip) {
@@ -989,7 +989,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 match is_success {
                     true => return true,
                     false => {
-                        self.add_failure(peer_ip, format!("Non-existent block request from {}", peer_ip))
+                        self.add_failure(peer_ip, format!("Non-existent block request {} from {}", block_height, peer_ip))
                             .await
                     }
                 }
