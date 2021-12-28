@@ -34,7 +34,7 @@ use chrono::Utc;
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
-    net::SocketAddr,
+    net::{SocketAddr, IpAddr},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -326,6 +326,24 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 if !self.status.is_peering() {
                     // Process the unconfirmed block.
                     self.add_block(block.clone(), &prover_router).await;
+                    
+                    fn is_global_block_routing_enabled() -> bool {
+                        std::env::var("ALEO_GLOBAL_BLOCK_ROUTING_ENABLED")
+                            .and_then(|v| match v.parse() {
+                                Ok(val) => Ok(val),
+                                Err(_) => Ok(false),
+                            })
+                            .unwrap_or(false)
+                    }
+                    let is_peer_global = match peer_ip.ip() {
+                        IpAddr::V4(ip) => !ip.is_private() && !ip.is_loopback() && !ip.is_link_local(),
+                        IpAddr::V6(ip) => !ip.is_loopback(),
+                    };
+                    if is_peer_global && !is_global_block_routing_enabled() {
+                        trace!("Skip Propagating 'UnconfirmedBlock {}' from {}", block.height(), peer_ip);
+                        return;
+                    }
+
                     // Propagate the unconfirmed block to the connected peers.
                     let message = Message::UnconfirmedBlock(block.height(), block.hash(), Data::Object(block));
                     let request = PeersRequest::MessagePropagate(peer_ip, message);
