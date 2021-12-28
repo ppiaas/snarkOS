@@ -322,6 +322,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 self.update_peer(peer_ip, node_type, status, is_fork, block_locators).await;
             }
             LedgerRequest::UnconfirmedBlock(peer_ip, block, prover_router) => {
+                trace!("Processing 'UnconfirmedBlock {}' from {}", block.height(), peer_ip);
                 // Ensure the node is not peering.
                 if !self.status.is_peering() {
                     // Process the unconfirmed block.
