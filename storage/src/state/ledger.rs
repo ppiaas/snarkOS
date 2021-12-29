@@ -90,6 +90,8 @@ pub struct LedgerState<N: Network> {
     read_only: (bool, Arc<AtomicU32>, RwLock<Option<Arc<JoinHandle<()>>>>),
     /// Used to ensure the database operations aren't interrupted by a shutdown.
     map_lock: Arc<RwLock<()>>,
+    /// The current coinbase transaction template that is being mined on by the operator.
+    coinbase_template: RwLock<Option<CoinbaseTemplate<N>>>,
 }
 
 impl<N: Network> LedgerState<N> {
@@ -116,6 +118,7 @@ impl<N: Network> LedgerState<N> {
             blocks: BlockState::open(storage)?,
             read_only: (is_read_only, Arc::new(AtomicU32::new(0)), RwLock::new(None)),
             map_lock: Default::default(),
+            coinbase_template: Default::default(),
         };
 
         // Determine the latest block height.
@@ -245,6 +248,7 @@ impl<N: Network> LedgerState<N> {
             blocks: BlockState::open(storage)?,
             read_only: (is_read_only, Arc::new(AtomicU32::new(0)), RwLock::new(None)),
             map_lock: Default::default(),
+            coinbase_template: Default::default(),
         });
 
         // Determine the latest block height.
@@ -582,6 +586,16 @@ impl<N: Network> LedgerState<N> {
         Ok(true)
     }
 
+    /// Returns a coinbase template based on the latest state of the ledger.
+    pub fn get_coinbase_template(&self) -> Option<CoinbaseTemplate<N>> {
+        self.coinbase_template.read().clone()
+    }
+
+    /// Set the latest coinbase template.
+    pub fn set_coinbase_template(&self, coinbase: Option<CoinbaseTemplate<N>>) {
+        *self.coinbase_template.write() = coinbase.clone();
+    }
+
     /// Returns a block template based on the latest state of the ledger.
     pub fn get_block_template<R: Rng + CryptoRng>(
         &self,
@@ -615,10 +629,14 @@ impl<N: Network> LedgerState<N> {
         // Construct the ledger root.
         let ledger_root = self.latest_ledger_root();
         // Craft a coinbase transaction.
-        let new_coinbase_start = Instant::now();
         let amount = Block::<N>::block_reward(block_height);
-        let (coinbase_transaction, coinbase_record) = Transaction::<N>::new_coinbase(recipient, amount, is_public, rng)?;
-        trace!("Execute coinbase transaction time: {:?}, height: {}, timestamp: {}, difficulty: {}, weight: {}", new_coinbase_start.elapsed(), block_height, block_timestamp, difficulty_target, cumulative_weight);
+        if self.get_coinbase_template().is_none() {
+            let new_coinbase_start = Instant::now();
+            self.set_coinbase_template(Some(CoinbaseTemplate::from(Transaction::<N>::new_coinbase(recipient, amount, is_public, rng)?)));
+            trace!("Execute coinbase transaction time: {:?}, height: {}, timestamp: {}, difficulty: {}, weight: {}", new_coinbase_start.elapsed(), block_height, block_timestamp, difficulty_target, cumulative_weight);
+        }
+        let coinbase_template = self.get_coinbase_template().unwrap();
+        let (coinbase_transaction, coinbase_record) = (coinbase_template.transaction(), coinbase_template.record());
         // Filter the transactions to ensure they are new, and append the coinbase transaction.
         // TODO (howardwu): Improve the performance and design of this.
         let mut transactions: Vec<Transaction<N>> = transactions
@@ -680,7 +698,10 @@ impl<N: Network> LedgerState<N> {
 
         // Mine the next block.
         match Block::mine(template, terminator, rng) {
-            Ok(block) => Ok((block, coinbase_record)),
+            Ok(block) => {
+                self.set_coinbase_template(None);
+                Ok((block, coinbase_record))
+            },
             Err(error) => Err(anyhow!("Unable to mine the next block: {}", error)),
         }
     }
