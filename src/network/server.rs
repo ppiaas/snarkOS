@@ -295,7 +295,7 @@ impl<N: Network, E: Environment> Server<N, E> {
         ledger: Arc<Ledger<N, E>>,
         prover_router: ProverRouter<N>,
     ) {
-        // Initialize the heartbeat process.
+        info!("initialize_heartbeat_v2");
 
         let peers = peers.clone();
         let tasks_clone = tasks.clone();
