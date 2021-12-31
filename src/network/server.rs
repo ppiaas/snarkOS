@@ -113,7 +113,8 @@ impl<N: Network, E: Environment> Server<N, E> {
         )
         .await;
         // Initialize a new instance of the heartbeat.
-        Self::initialize_heartbeat(&mut tasks, peers.router(), ledger.reader(), ledger.router(), prover.router()).await;
+        // Self::initialize_heartbeat(&mut tasks, peers.router(), ledger.reader(), ledger.router(), prover.router()).await;
+        Self::initialize_heartbeat_v2(tasks.clone(), peers.clone(), ledger.clone(), prover.router()).await;
         // Initialize a new instance of the RPC server.
         Self::initialize_rpc(
             &mut tasks,
@@ -281,6 +282,40 @@ impl<N: Network, E: Environment> Server<N, E> {
                     error!("Failed to send heartbeat to peers: {}", error)
                 }
                 // Sleep for `E::HEARTBEAT_IN_SECS` seconds.
+                tokio::time::sleep(Duration::from_secs(E::HEARTBEAT_IN_SECS)).await;
+            }
+        }));
+        // Wait until the heartbeat task is ready.
+        let _ = handler.await;
+    }
+
+    async fn initialize_heartbeat_v2(
+        tasks: Tasks<task::JoinHandle<()>>,
+        peers: Arc<Peers<N, E>>,
+        ledger: Arc<Ledger<N, E>>,
+        prover_router: ProverRouter<N>,
+    ) {
+        // Initialize the heartbeat process.
+
+        let peers = peers.clone();
+        let tasks_clone = tasks.clone();
+
+        let (router, handler) = oneshot::channel();
+        tasks.append(task::spawn(async move {
+            // Notify the outer function that the task is ready.
+            let _ = router.send(());
+            loop {
+                // h1
+                ledger.update(LedgerRequest::Heartbeat(prover_router.clone())).await;
+
+                // h2
+                let request = PeersRequest::Heartbeat(ledger.reader(), ledger.router(), prover_router.clone());
+                let peers = peers.clone();
+                let tasks = tasks_clone.clone();
+                tasks_clone.append(task::spawn(async move {
+                    peers.update(request, &tasks).await;
+                }));
+
                 tokio::time::sleep(Duration::from_secs(E::HEARTBEAT_IN_SECS)).await;
             }
         }));
