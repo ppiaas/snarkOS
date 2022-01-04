@@ -15,12 +15,11 @@
 // along with the snarkOS library. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    helpers::{block_requests::*, CircularMap, State, Status, Tasks},
+    helpers::{block_requests::*, CircularMap, NodeType, State},
     Data,
     Environment,
     LedgerReader,
     Message,
-    NodeType,
     PeersRequest,
     PeersRouter,
     ProverRequest,
@@ -37,16 +36,12 @@ use std::{
     hash::{Hash, Hasher},
     net::{SocketAddr, IpAddr},
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
 };
 use tokio::{
     sync::{mpsc, oneshot, Mutex, RwLock},
     task,
-    task::JoinHandle,
 };
 
 /// The maximum number of unconfirmed blocks that can be held by the ledger.
@@ -151,23 +146,13 @@ pub struct Ledger<N: Network, E: Environment> {
     last_block_update_timestamp: RwLock<Instant>,
     /// The map of each peer to their failure messages := (failure_message, timestamp).
     failures: RwLock<HashMap<SocketAddr, Vec<(String, i64)>>>,
-    /// The status of the node.
-    status: Status,
-    /// A terminator bit for the prover.
-    terminator: Arc<AtomicBool>,
     /// The peers router of the node.
     peers_router: PeersRouter<N, E>,
 }
 
 impl<N: Network, E: Environment> Ledger<N, E> {
     /// Initializes a new instance of the ledger.
-    pub async fn open<S: Storage, P: AsRef<Path> + Copy>(
-        tasks: &mut Tasks<JoinHandle<()>>,
-        path: P,
-        status: &Status,
-        terminator: &Arc<AtomicBool>,
-        peers_router: PeersRouter<N, E>,
-    ) -> Result<Arc<Self>> {
+    pub async fn open<S: Storage, P: AsRef<Path> + Copy>(path: P, peers_router: PeersRouter<N, E>) -> Result<Arc<Self>> {
         // Initialize an mpsc channel for sending requests to the `Ledger` struct.
 
         let buf_size = match std::env::var("LEDGER_BUF_SIZE") {
@@ -191,8 +176,6 @@ impl<N: Network, E: Environment> Ledger<N, E> {
             block_requests_lock: Arc::new(Mutex::new(())),
             last_block_update_timestamp: RwLock::new(Instant::now()),
             failures: Default::default(),
-            status: status.clone(),
-            terminator: terminator.clone(),
             peers_router,
         });
 
@@ -200,7 +183,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
         {
             let ledger = ledger.clone();
             let (router, handler) = oneshot::channel();
-            tasks.append(task::spawn(async move {
+            E::tasks().append(task::spawn(async move {
                 // Notify the outer function that the task is ready.
                 let _ = router.send(());
                 // Asynchronously wait for a ledger request.
@@ -236,7 +219,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
         debug!("Ledger is shutting down...");
 
         // Set the terminator bit to `true` to ensure it stops mining.
-        self.terminator.store(true, Ordering::SeqCst);
+        E::terminator().store(true, Ordering::SeqCst);
         trace!("[ShuttingDown] Terminator bit has been enabled");
 
         // Clear the unconfirmed blocks.
@@ -309,7 +292,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 debug!(
                     "Status Report (type = {}, status = {}, block_height = {}, cumulative_weight = {}, block_requests = {}, connected_peers = {})",
                     E::NODE_TYPE,
-                    self.status,
+                    E::status(),
                     self.canon.latest_block_height(),
                     self.canon.latest_cumulative_weight(),
                     self.number_of_block_requests().await,
@@ -325,7 +308,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
             LedgerRequest::UnconfirmedBlock(peer_ip, block, prover_router) => {
                 trace!("Processing 'UnconfirmedBlock {}' from {}", block.height(), peer_ip);
                 // Ensure the node is not peering.
-                if !self.status.is_peering() {
+                if !E::status().is_peering() {
                     // Process the unconfirmed block.
                     self.add_block(block.clone(), &prover_router).await;
                     
@@ -464,7 +447,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
 
         // If the timestamp of the last block increment has surpassed the preset limit,
         // the ledger is likely syncing from invalid state, and should revert by one block.
-        if self.status.is_syncing()
+        if E::status().is_syncing()
             && self.last_block_update_timestamp.read().await.elapsed() > 2 * Duration::from_secs(E::RADIO_SILENCE_IN_SECS)
         {
             // Acquire the lock for block requests.
@@ -493,13 +476,13 @@ impl<N: Network, E: Environment> Ledger<N, E> {
     ///
     async fn update_status(&self) {
         // Retrieve the status variable.
-        let mut status = self.status.get();
+        let mut status = E::status().get();
 
         // If the node is shutting down, skip the update.
         if status == State::ShuttingDown {
             trace!("Ledger is shutting down");
             // Set the terminator bit to `true` to ensure it stops mining.
-            self.terminator.store(true, Ordering::SeqCst);
+            E::terminator().store(true, Ordering::SeqCst);
             return;
         }
         // If there is an insufficient number of connected peers, set the status to `Peering`.
@@ -537,14 +520,14 @@ impl<N: Network, E: Environment> Ledger<N, E> {
         // If the node is `Peering` or `Syncing`, it should not be mining.
         if status == State::Peering || status == State::Syncing {
             // Set the terminator bit to `true` to ensure it does not mine.
-            self.terminator.store(true, Ordering::SeqCst);
+            E::terminator().store(true, Ordering::SeqCst);
         } else {
             // Set the terminator bit to `false` to ensure it is allowed to mine.
-            self.terminator.store(false, Ordering::SeqCst);
+            E::terminator().store(false, Ordering::SeqCst);
         }
 
         // Update the ledger to the determined status.
-        self.status.update(status);
+        E::status().update(status);
     }
 
     ///
@@ -609,7 +592,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                         // Update the timestamp of the last block increment.
                         *self.last_block_update_timestamp.write().await = Instant::now();
                         // Set the terminator bit to `true` to ensure the miner updates state.
-                        self.terminator.store(true, Ordering::SeqCst);
+                        E::terminator().store(true, Ordering::SeqCst);
                         // On success, filter the unconfirmed blocks of this block, if it exists.
                         self.unconfirmed_blocks.write().await.remove(&unconfirmed_previous_block_hash);
 
@@ -657,7 +640,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 // Update the last block update timestamp.
                 *self.last_block_update_timestamp.write().await = Instant::now();
                 // Set the terminator bit to `true` to ensure the miner resets state.
-                self.terminator.store(true, Ordering::SeqCst);
+                E::terminator().store(true, Ordering::SeqCst);
 
                 // Lock unconfirmed_blocks for further processing.
                 let mut unconfirmed_blocks = self.unconfirmed_blocks.write().await;
@@ -672,7 +655,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 warn!("{}", error);
 
                 // Set the terminator bit to `true` to ensure the miner resets state.
-                self.terminator.store(true, Ordering::SeqCst);
+                E::terminator().store(true, Ordering::SeqCst);
                 // Reset the unconfirmed blocks.
                 self.unconfirmed_blocks.write().await.clear();
 
@@ -935,40 +918,6 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                     }
                 }
             }
-
-            // TODO (howardwu): TEMPORARY - Evaluate the merits of this experiment after seeing the results.
-            // If the node is a sync node and the node is currently syncing,
-            // reduce the number of connections down to the minimum threshold,
-            // to improve the speed with which the node syncs back to tip.
-            // FIXME: causes sync nodes to hang when at maximum peers
-            /*
-            if E::NODE_TYPE == NodeType::Sync && self.status.is_syncing() {
-                debug!("Temporarily reducing the number of connected peers to sync");
-
-                // Lock peers_state for further processing.
-                let peers_state = self.peers_state.read().await;
-
-                // Determine the peers to disconnect from.
-                // Attention - We are reducing this to the `MINIMUM_NUMBER_OF_PEERS`, *not* `MAXIMUM_NUMBER_OF_PEERS`.
-                let num_excess_peers = peers_state.len().saturating_sub(E::MINIMUM_NUMBER_OF_PEERS);
-                let peer_ips_to_disconnect = peers_state
-                    .iter()
-                    .filter(|(&ip, _)| ip != peer_ip)
-                    .take(num_excess_peers)
-                    .map(|(&ip, _)| ip)
-                    .collect::<Vec<SocketAddr>>();
-
-                // Release the lock over peers_state.
-                drop(peers_state);
-
-                trace!("Found {} peers to temporarily disconnect", peer_ips_to_disconnect.len());
-
-                // Proceed to disconnect and restrict these peers.
-                for peer_ip in peer_ips_to_disconnect {
-                    self.disconnect_and_restrict(peer_ip, "disconnecting to sync").await;
-                }
-            }
-            */
         }
     }
 

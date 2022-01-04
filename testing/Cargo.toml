@@ -24,8 +24,8 @@ features = ["test"]
 path = "../storage"
 
 [dependencies.snarkvm]
-#git = "https://github.com/AleoHQ/snarkVM.git"
-#rev = "02c814c"
+# git = "https://github.com/AleoHQ/snarkVM.git"
+# rev = "ff10c20"
 path = "../../snarkVM"
 
 [dependencies.anyhow]
