@@ -31,6 +31,7 @@ use snarkvm::dpc::prelude::*;
 
 use anyhow::Result;
 use chrono::Utc;
+use rayon::prelude::*;
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -737,10 +738,21 @@ impl<N: Network, E: Environment> Ledger<N, E> {
             // Determine the latest block height of the peer.
             let mut latest_block_height_of_peer = 0;
 
+            let start = Instant::now();
+            let expected_block_heights: Vec<(u32, bool)> = block_locators
+                .par_iter()
+                .map(|(_, (block_hash, _))| {
+                    self.canon
+                        .get_block_height(block_hash)
+                        .map_or_else(|_| (0, false), |expected_block_height| (expected_block_height, true))
+                })
+                .collect();
+            trace!("Get block heights from block hashes sent by the peer ({:?})", start.elapsed());
+
             // Verify the integrity of the block hashes sent by the peer.
-            for (block_height, (block_hash, _)) in block_locators.iter() {
+            for ((block_height, (block_hash, _)), (expected_block_height, existed)) in block_locators.iter().zip(expected_block_heights) {
                 // Ensure the block hash corresponds with the block height, if the block hash exists in this ledger.
-                if let Ok(expected_block_height) = self.canon.get_block_height(block_hash) {
+                if existed {
                     if expected_block_height != *block_height {
                         let error = format!("Invalid block height {} for block hash {}", expected_block_height, block_hash);
                         trace!("{}", error);

@@ -18,6 +18,8 @@ use crate::{network::ledger::PeersState, Environment};
 use snarkos_storage::{BlockLocators, LedgerState};
 use snarkvm::dpc::prelude::*;
 
+use anyhow::Result;
+use rayon::prelude::*;
 use std::{collections::HashSet, net::SocketAddr};
 
 /// Checks if any of the peers are ahead and have a larger block height, if they are on a fork, and their block locators.
@@ -70,9 +72,18 @@ pub fn find_common_ancestor<N: Network>(canon: &LedgerState<N>, block_locators: 
     // Determine the first locator (smallest height) that does not exist in this ledger.
     let mut first_deviating_locator = None;
 
-    for (block_height, (block_hash, _)) in block_locators.iter() {
+    let expected_block_heights: Vec<(u32, bool)> = block_locators
+        .par_iter()
+        .map(|(_, (block_hash, _))| {
+            canon
+                .get_block_height(block_hash)
+                .map_or_else(|_| (0, false), |expected_block_height| (expected_block_height, true))
+        })
+        .collect();
+
+    for ((block_height, (block_hash, _)), (expected_block_height, existed)) in block_locators.iter().zip(expected_block_heights) {
         // Ensure the block hash corresponds with the block height, if the block hash exists in this ledger.
-        if let Ok(expected_block_height) = canon.get_block_height(block_hash) {
+        if existed {
             if expected_block_height != *block_height {
                 let error = format!("Invalid block height {} for block hash {}", expected_block_height, block_hash);
                 return Err(error);
