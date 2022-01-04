@@ -309,12 +309,12 @@ impl<N: Network, E: Environment> Server<N, E> {
                 ledger.update(LedgerRequest::Heartbeat(prover_router.clone())).await;
 
                 // h2
-                let request = PeersRequest::Heartbeat(ledger.reader(), ledger.router(), prover_router.clone());
-                let peers = peers.clone();
                 let tasks = tasks_clone.clone();
-                tasks_clone.append(task::spawn(async move {
-                    peers.update(request, &tasks).await;
-                }));
+                peers.update(PeersRequest::Heartbeat(
+                    ledger.reader(),
+                    ledger.router(),
+                    prover_router.clone()),
+                             &tasks).await;
 
                 tokio::time::sleep(Duration::from_secs(E::HEARTBEAT_IN_SECS)).await;
             }
