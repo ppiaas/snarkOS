@@ -224,3 +224,15 @@ impl<N: Network> Environment for ProverTrial<N> {
     const MAXIMUM_NUMBER_OF_PEERS: usize = 21;
     const COINBASE_IS_PUBLIC: bool = true;
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct CoordinatorTrial<N: Network>(PhantomData<N>);
+
+#[rustfmt::skip]
+impl<N: Network> Environment for CoordinatorTrial<N> {
+    type Network = N;
+    const NODE_TYPE: NodeType = NodeType::Coordinator;
+    const MINIMUM_NUMBER_OF_PEERS: usize = 0;
+    const MAXIMUM_NUMBER_OF_PEERS: usize = 1024;
+    const COINBASE_IS_PUBLIC: bool = true;
+}

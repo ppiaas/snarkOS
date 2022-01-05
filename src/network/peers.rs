@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with the snarkOS library. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{Data, Environment, LedgerReader, LedgerRouter, Message, OperatorRouter, OutboundRouter, Peer, ProverRouter};
+use crate::{Data, Environment, LedgerReader, LedgerRouter, Message, OperatorRouter, Peer, ProverRouter, helpers::NodeType, OutboundRouter};
 use snarkvm::dpc::prelude::*;
 
 use anyhow::Result;
@@ -59,6 +59,8 @@ pub enum PeersRequest<N: Network, E: Environment> {
     Heartbeat(LedgerReader<N>, LedgerRouter<N>, OperatorRouter<N>, ProverRouter<N>),
     /// MessagePropagate := (peer_ip, message)
     MessagePropagate(SocketAddr, Message<N, E>),
+    /// MessagePublish := (message, node_type)
+    MessagePublish(Message<N, E>, NodeType),
     /// MessageSend := (peer_ip, message)
     MessageSend(SocketAddr, Message<N, E>),
     /// PeerConnecting := (stream, peer_ip, ledger_reader, ledger_router, operator_router, prover_router)
@@ -71,7 +73,7 @@ pub enum PeersRequest<N: Network, E: Environment> {
         ProverRouter<N>,
     ),
     /// PeerConnected := (peer_ip, peer_nonce, outbound_router)
-    PeerConnected(SocketAddr, u64, OutboundRouter<N, E>),
+    PeerConnected(SocketAddr, u64, NodeType, OutboundRouter<N, E>),
     /// PeerDisconnected := (peer_ip)
     PeerDisconnected(SocketAddr),
     /// PeerRestricted := (peer_ip)
@@ -93,7 +95,7 @@ pub struct Peers<N: Network, E: Environment> {
     /// The local nonce for this node session.
     local_nonce: u64,
     /// The map connected peer IPs to their nonce and outbound message router.
-    connected_peers: RwLock<HashMap<SocketAddr, (u64, OutboundRouter<N, E>)>>,
+    connected_peers: RwLock<HashMap<SocketAddr, (u64, NodeType, OutboundRouter<N, E>)>>,
     /// The set of candidate peer IPs.
     candidate_peers: RwLock<HashSet<SocketAddr>>,
     /// The set of restricted peer IPs.
@@ -240,7 +242,7 @@ impl<N: Network, E: Environment> Peers<N, E> {
             .read()
             .await
             .values()
-            .map(|(peer_nonce, _)| *peer_nonce)
+            .map(|(peer_nonce, _, _)| *peer_nonce)
             .collect()
     }
 
@@ -431,6 +433,9 @@ impl<N: Network, E: Environment> Peers<N, E> {
             PeersRequest::MessagePropagate(sender, message) => {
                 self.propagate(sender, message).await;
             }
+            PeersRequest::MessagePublish(message, to_node_type) => {
+                self.propagate_to(self.local_ip, message, |_, node_type| *node_type == to_node_type).await;
+            }
             PeersRequest::MessageSend(sender, message) => {
                 self.send(sender, message).await;
             }
@@ -512,9 +517,9 @@ impl<N: Network, E: Environment> Peers<N, E> {
                     }
                 }
             }
-            PeersRequest::PeerConnected(peer_ip, peer_nonce, outbound) => {
+            PeersRequest::PeerConnected(peer_ip, peer_nonce, node_type, outbound) => {
                 // Add an entry for this `Peer` in the connected peers.
-                self.connected_peers.write().await.insert(peer_ip, (peer_nonce, outbound));
+                self.connected_peers.write().await.insert(peer_ip, (peer_nonce, node_type, outbound));
                 // Remove an entry for this `Peer` in the candidate peers, if it exists.
                 self.candidate_peers.write().await.remove(&peer_ip);
             }
@@ -570,7 +575,7 @@ impl<N: Network, E: Environment> Peers<N, E> {
     async fn send(&self, peer: SocketAddr, message: Message<N, E>) {
         let target_peer = self.connected_peers.read().await.get(&peer).cloned();
         match target_peer {
-            Some((_, outbound)) => {
+            Some((_, _, outbound)) => {
                 if let Err(error) = outbound.send(message).await {
                     trace!("Outbound channel failed: {}", error);
                     self.connected_peers.write().await.remove(&peer);
@@ -603,6 +608,30 @@ impl<N: Network, E: Environment> Peers<N, E> {
             .collect::<Vec<_>>()
         {
             self.send(peer, message.clone()).await;
+        }
+    }
+
+    ///
+    /// Sends the given message to connected peers with filter, excluding the sender.
+    ///
+    async fn propagate_to<F>(&self, sender: SocketAddr, mut message: Message<N, E>, filter: F)
+    where
+        F: Fn(&SocketAddr, &NodeType) -> bool,
+    {
+        // Perform ahead-of-time, non-blocking serialization just once for applicable objects.
+        if let Message::UnconfirmedBlock(_, _, ref mut data) = message {
+            let serialized_block = Data::serialize(data.clone()).await.expect("Block serialization is bugged");
+            let _ = std::mem::replace(data, Data::Buffer(serialized_block));
+        }
+
+        for (peer_ip, (_, _node_type, _outbound)) in self
+            .connected_peers
+            .read()
+            .await
+            .iter()
+            .filter(|(peer_ip, (_, node_type, _outbound))| *peer_ip != &sender && filter(peer_ip, node_type))
+        {
+            self.send(peer_ip.clone(), message.clone()).await;
         }
     }
 

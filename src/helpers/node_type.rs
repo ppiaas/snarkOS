@@ -32,6 +32,8 @@ pub enum NodeType {
     Operator,
     /// A proving node is a full node, capable of producing proofs for a pool.
     Prover,
+    /// An operating node is a light node, capable of coordinating workers in a pool.
+    Coordinator,
 }
 
 impl NodeType {
@@ -43,6 +45,7 @@ impl NodeType {
             Self::Sync => "a sync node",
             Self::Operator => "an operating node",
             Self::Prover => "a proving node",
+            Self::Coordinator => "an coordinator node",
         }
     }
 }

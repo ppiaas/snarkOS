@@ -290,6 +290,15 @@ impl<N: Network, E: Environment> Ledger<N, E> {
             maybe_latest_block,
             start.elapsed(),
         );
+
+        if maybe_latest_block {
+            // TODO Propagate the unconfirmed block to the Coordinator nodes.
+            let message = Message::BlockResponse(Data::Object(self.canon.latest_block()));
+            let request = PeersRequest::MessagePublish(message, NodeType::Coordinator);
+            if let Err(error) = self.peers_router.send(request).await {
+                warn!("[UnconfirmedBlock] {}", error);
+            }
+        }
     }
 
     ///

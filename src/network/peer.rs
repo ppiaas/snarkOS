@@ -57,20 +57,20 @@ pub(crate) struct Peer<N: Network, E: Environment> {
     /// The IP address of the peer, with the port set to the listener port.
     listener_ip: SocketAddr,
     /// The message version of the peer.
-    version: u32,
+    pub(super) version: u32,
     /// The node type of the peer.
-    node_type: NodeType,
+    pub(super) node_type: NodeType,
     /// The node type of the peer.
     status: Status,
     /// The block header of the peer.
-    block_header: BlockHeader<N>,
+    pub(super) block_header: BlockHeader<N>,
     /// The timestamp of the last message received from this peer.
     last_seen: Instant,
     /// The TCP socket that handles sending and receiving data with this peer.
-    outbound_socket: Framed<TcpStream, Message<N, E>>,
+    pub(super) outbound_socket: Framed<TcpStream, Message<N, E>>,
     /// The `outbound_handler` half of the MPSC message channel, used to receive messages from peers.
     /// When a message is received on this `OutboundHandler`, it will be written to the socket.
-    outbound_handler: OutboundHandler<N, E>,
+    pub(super) outbound_handler: OutboundHandler<N, E>,
     /// The map of block hashes to their last seen timestamp.
     seen_inbound_blocks: HashMap<N::BlockHash, SystemTime>,
     /// The map of transaction IDs to their last seen timestamp.
@@ -121,7 +121,7 @@ impl<N: Network, E: Environment> Peer<N, E> {
 
         // Add an entry for this `Peer` in the connected peers.
         peers_router
-            .send(PeersRequest::PeerConnected(peer_ip, peer_nonce, outbound_router))
+            .send(PeersRequest::PeerConnected(peer_ip, peer_nonce, node_type, outbound_router))
             .await?;
 
         Ok(Peer {
@@ -140,13 +140,80 @@ impl<N: Network, E: Environment> Peer<N, E> {
         })
     }
 
+    /// Create a new instance of `Peer`.
+    pub(super) async fn build(
+        stream: TcpStream,
+        local_ip: SocketAddr,
+        local_nonce: u64,
+        cumulative_weight: u128,
+        block_hash: N::BlockHash,
+        block_header: BlockHeader<N>,
+        outbound_handler: OutboundHandler<N, E>,
+        connected_nonces: &[u64],
+    ) -> Result<Self> {
+        // Construct the socket.
+        let mut outbound_socket = Framed::new(stream, Message::<N, E>::PeerRequest);
+
+        // Perform the handshake before proceeding.
+        let (peer_ip, _peer_nonce, node_type, status) = Peer::handshake(
+            &mut outbound_socket,
+            local_ip,
+            local_nonce,
+            cumulative_weight,
+            connected_nonces,
+        )
+        .await?;
+
+        // Send the first `Ping` message to the peer.
+        let message = Message::Ping(
+            E::MESSAGE_VERSION,
+            N::ALEO_MAXIMUM_FORK_DEPTH,
+            E::NODE_TYPE,
+            E::status().get(),
+            block_hash,
+            Data::Object(block_header),
+        );
+        trace!("Sending '{}' to {}", message.name(), peer_ip);
+        outbound_socket.send(message).await?;
+
+        Ok(Peer {
+            listener_ip: peer_ip,
+            version: 0,
+            node_type,
+            status,
+            block_header: N::genesis_block().header().clone(),
+            last_seen: Instant::now(),
+            outbound_socket,
+            outbound_handler,
+            seen_inbound_blocks: Default::default(),
+            seen_inbound_transactions: Default::default(),
+            seen_outbound_blocks: Default::default(),
+            seen_outbound_transactions: Default::default(),
+        })
+    }
+
     /// Returns the IP address of the peer, with the port set to the listener port.
-    fn peer_ip(&self) -> SocketAddr {
+    pub fn peer_ip(&self) -> SocketAddr {
         self.listener_ip
     }
 
+    /// Returns the block height.
+    pub fn height(&self) -> u32 {
+        self.block_header.height()
+    }
+
+    /// Returns the cumulative weight.
+    pub fn cumulative_weight(&self) -> u128 {
+        self.block_header.cumulative_weight()
+    }
+
+    /// Returns the node type.
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
+
     /// Sends the given message to this peer.
-    async fn send(&mut self, message: Message<N, E>) -> Result<()> {
+    pub async fn send(&mut self, message: Message<N, E>) -> Result<()> {
         trace!("Sending '{}' to {}", message.name(), self.peer_ip());
         self.outbound_socket.send(message).await?;
         Ok(())
@@ -351,7 +418,7 @@ impl<N: Network, E: Environment> Peer<N, E> {
 
             // Retrieve the peer IP.
             let peer_ip = peer.peer_ip();
-            info!("Connected to {}", peer_ip);
+            info!("Connected to {} ({})", peer_ip, peer.node_type);
 
             // Process incoming messages until this stream is disconnected.
             loop {
@@ -604,6 +671,7 @@ impl<N: Network, E: Environment> Peer<N, E> {
                                     }));
                                 }
                                 Message::UnconfirmedBlock(block_height, block_hash, block) => {
+                                    trace!("Received 'UnconfirmedBlock {} ({})' from {}", block_height, block_hash, peer_ip);
                                     // Drop the peer, if they have sent more than 5 unconfirmed blocks in the last 5 seconds.
                                     let frequency = peer.seen_inbound_blocks.values().filter(|t| t.elapsed().unwrap().as_secs() <= 5).count();
                                     if frequency >= 10 {

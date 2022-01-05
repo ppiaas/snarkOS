@@ -15,11 +15,12 @@
 // along with the snarkOS library. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    environment::{Client, ClientTrial, Environment, Miner, MinerTrial, Operator, OperatorTrial, Prover, ProverTrial, SyncNode},
+    environment::{Client, ClientTrial, CoordinatorTrial, Environment, Miner, MinerTrial, Operator, OperatorTrial, Prover, ProverTrial, SyncNode},
     helpers::{NodeType, Updater},
-    network::Server,
+    network::{CoordinatorServer, Server},
     Display,
 };
+use futures::Future;
 use snarkos_storage::storage::rocksdb::RocksDB;
 use snarkvm::dpc::{prelude::*, testnet2::Testnet2};
 
@@ -80,6 +81,8 @@ pub struct Node {
     pub trial: bool,
     #[structopt(hidden = true, long)]
     pub sync: bool,
+    #[structopt(long = "coordinator")]
+    pub coordinator: bool,
     /// Specify an optional subcommand.
     #[structopt(subcommand)]
     commands: Option<Command>,
@@ -88,6 +91,12 @@ pub struct Node {
 impl Node {
     /// Starts the node.
     pub async fn start(self) -> Result<()> {
+        if self.commands.is_none() {
+            if self.coordinator {
+                return self.start_coordinator::<Testnet2, CoordinatorTrial<Testnet2>>().await;
+            }
+        }
+
         // Parse optional subcommands first.
         match self.commands {
             Some(command) => {
@@ -146,6 +155,36 @@ impl Node {
                 aleo_std::aleo_prover_dir(self.network, self.dev)
             }
         }
+    }
+
+    async fn start_coordinator<N: Network, E: Environment>(&self) -> Result<()> {
+        println!("{}", crate::display::welcome_message());
+        println!("Starting {} on {}.", E::NODE_TYPE.description(), N::NETWORK_NAME);
+        println!("{}", crate::display::notification_message::<N>(None));
+
+        // Initialize the node's server.
+        let server = CoordinatorServer::<N, E>::initialize(self).await?;
+
+        // Initialize signal handling; it also maintains ownership of the Server
+        // in order for it to not go out of scope.
+        let server_clone = server.clone();
+        handle_signals_callback(async move {
+            server_clone.shut_down().await;
+        });
+
+        // Connect to a peer if one was given as an argument.
+        if let Some(peer_ips) = &self.connect {
+            for peer_ip in peer_ips.iter() {
+                debug!("Connecting to {}", peer_ip);
+                let _ = server.connect_to(peer_ip.parse().unwrap()).await;
+            }
+        }
+
+        // Note: Do not move this. The pending await must be here otherwise
+        // other snarkOS commands will not exit.
+        std::future::pending::<()>().await;
+
+        Ok(())
     }
 
     async fn start_server<N: Network, E: Environment>(&self, address: &Option<String>) -> Result<()> {
@@ -477,6 +516,18 @@ fn handle_signals<N: Network, E: Environment>(server: Server<N, E>) {
         match signal::ctrl_c().await {
             Ok(()) => {
                 server.shut_down().await;
+                std::process::exit(0);
+            }
+            Err(error) => error!("tokio::signal::ctrl_c encountered an error: {}", error),
+        }
+    });
+}
+
+fn handle_signals_callback(on_exit: impl Future<Output = ()> + Send + 'static) {
+    task::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                on_exit.await;
                 std::process::exit(0);
             }
             Err(error) => error!("tokio::signal::ctrl_c encountered an error: {}", error),
