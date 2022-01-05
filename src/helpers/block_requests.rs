@@ -20,7 +20,7 @@ use snarkvm::dpc::prelude::*;
 
 use anyhow::Result;
 use rayon::prelude::*;
-use std::{collections::HashSet, net::SocketAddr};
+use std::{collections::HashSet, net::SocketAddr, time::Instant};
 
 /// Checks if any of the peers are ahead and have a larger block height, if they are on a fork, and their block locators.
 /// The maximum known block height and cumulative weight are tracked for the purposes of further operations.
@@ -72,6 +72,7 @@ pub fn find_common_ancestor<N: Network>(canon: &LedgerState<N>, block_locators: 
     // Determine the first locator (smallest height) that does not exist in this ledger.
     let mut first_deviating_locator = None;
 
+    let start = Instant::now();
     let expected_block_heights: Vec<(u32, bool)> = block_locators
         .par_iter()
         .map(|(_, (block_hash, _))| {
@@ -80,6 +81,7 @@ pub fn find_common_ancestor<N: Network>(canon: &LedgerState<N>, block_locators: 
                 .map_or_else(|_| (0, false), |expected_block_height| (expected_block_height, true))
         })
         .collect();
+    trace!("Get block heights from block hashes sent by the peer ({:?})", start.elapsed());
 
     for ((block_height, (block_hash, _)), (expected_block_height, existed)) in block_locators.iter().zip(expected_block_heights) {
         // Ensure the block hash corresponds with the block height, if the block hash exists in this ledger.

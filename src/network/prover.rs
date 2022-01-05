@@ -48,8 +48,8 @@ pub(crate) type ProverRouter<N> = mpsc::Sender<ProverRequest<N>>;
 /// Shorthand for the child half of the `Prover` message channel.
 type ProverHandler<N> = mpsc::Receiver<ProverRequest<N>>;
 
-/// The miner heartbeat in seconds.
-const MINER_HEARTBEAT_IN_SECONDS: Duration = Duration::from_secs(2);
+/// The miner heartbeat in milliseconds.
+const MINER_HEARTBEAT_IN_SECONDS: Duration = Duration::from_millis(100);
 
 ///
 /// An enum of requests that the `Prover` struct processes.
@@ -348,7 +348,7 @@ impl<N: Network, E: Environment> Prover<N, E> {
                             let ledger_router = prover.ledger_router.clone();
                             let prover_router = prover.prover_router.clone();
 
-                            E::tasks().append(task::spawn(async move {
+                            {
                                 // Mine the next block.
                                 let result = task::spawn_blocking(move || {
                                     thread_pool.install(move || {
@@ -369,7 +369,7 @@ impl<N: Network, E: Environment> Prover<N, E> {
 
                                 match result {
                                     Ok(Ok((block, coinbase_record))) => {
-                                        debug!("Miner has found unconfirmed block {} ({})", block.height(), block.hash());
+                                        debug!("Miner has found unconfirmed block {} ({}) (timestamp = {}, cumulative_weight = {}, difficulty_target = {})", block.height(), block.hash(), block.timestamp(), block.cumulative_weight(), block.difficulty_target());
                                         // Store the coinbase record.
                                         if let Err(error) = state.add_coinbase_record(block.height(), coinbase_record) {
                                             warn!("[Miner] Failed to store coinbase record - {}", error);
@@ -383,10 +383,14 @@ impl<N: Network, E: Environment> Prover<N, E> {
                                     }
                                     Ok(Err(error)) | Err(error) => trace!("{}", error),
                                 }
-                            }));
+                            };
                         }
                         // Proceed to sleep for a preset amount of time.
                         tokio::time::sleep(MINER_HEARTBEAT_IN_SECONDS).await;
+                        // Set the terminator bit to `false` to ensure it is allowed to mine.
+                        if !E::status().is_syncing() {
+                            E::terminator().store(false, Ordering::SeqCst);
+                        }
                     }
                 }));
                 // Wait until the miner task is ready.

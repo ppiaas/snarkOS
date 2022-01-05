@@ -34,7 +34,7 @@ use rayon::prelude::*;
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
-    net::{SocketAddr, IpAddr},
+    net::SocketAddr,
     path::Path,
     sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
@@ -67,9 +67,24 @@ pub enum LedgerRequest<N: Network> {
     /// Heartbeat := (prover_router)
     Heartbeat(ProverRouter<N>),
     /// Pong := (peer_ip, node_type, status, is_fork, block_locators)
-    Pong(SocketAddr, NodeType, State, Option<bool>, BlockLocators<N>),
+    Pong(SocketAddr, NodeType, State, Option<bool>, BlockLocators<N>, ProverRouter<N>),
     /// UnconfirmedBlock := (peer_ip, block, prover_router)
     UnconfirmedBlock(SocketAddr, Block<N>, ProverRouter<N>),
+}
+
+impl<N: Network> LedgerRequest<N> {
+    /// Returns the message name.
+    #[inline]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::BlockResponse(..) => "BlockResponse",
+            Self::Disconnect(..) => "Disconnect",
+            Self::Failure(..) => "Failure",
+            Self::Heartbeat(..) => "Heartbeat",
+            Self::Pong(..) => "Pong",
+            Self::UnconfirmedBlock(..) => "UnconfirmedBlock",
+        }
+    }
 }
 
 ///
@@ -242,17 +257,55 @@ impl<N: Network, E: Environment> Ledger<N, E> {
         (canon_lock, block_requests_lock, storage_map_lock)
     }
 
+    pub(super) async fn sync(&self, prover_router: &ProverRouter<N>, mut has_new_block: bool, info: String) {
+        let start = Instant::now();
+
+        // Update for sync nodes.
+        self.update_sync_nodes().await;
+        // Update the ledger.
+        if self.update_ledger(prover_router).await {
+            has_new_block = true;
+        }
+        // Update the status of the ledger.
+        self.update_status().await;
+        // Remove expired block requests.
+        self.remove_expired_block_requests().await;
+        // Remove expired failures.
+        self.remove_expired_failures().await;
+        // Disconnect from peers with frequent failures.
+        self.disconnect_from_failing_peers().await;
+        // Update the block requests.
+        self.update_block_requests().await;
+        
+        let maybe_latest_block = has_new_block && !E::status().is_syncing() && self.number_of_block_requests().await == 0;
+        debug!(
+            "Status Report from '{}' (type = {}, status = {}, block_height = {}, cumulative_weight = {}, block_requests = {}, connected_peers = {}, maybe_latest_block = {}) ({:?})",
+            info,
+            E::NODE_TYPE,
+            E::status(),
+            self.canon.latest_block_height(),
+            self.canon.latest_cumulative_weight(),
+            self.number_of_block_requests().await,
+            self.peers_state.read().await.len(),
+            maybe_latest_block,
+            start.elapsed(),
+        );
+    }
+
     ///
     /// Performs the given `request` to the ledger.
     /// All requests must go through this `update`, so that a unified view is preserved.
     ///
     pub(super) async fn update(&self, request: LedgerRequest<N>) {
+        let start = Instant::now();
+        let request_name = request.name().to_string();
+        trace!("Processing LedgerRequest '{}'", request_name);
         match request {
             LedgerRequest::BlockResponse(peer_ip, block, prover_router) => {
                 // Remove the block request from the ledger.
                 if self.remove_block_request(peer_ip, block.height()).await {
                     // On success, process the block response.
-                    self.add_block(block, &prover_router).await;
+                    let has_new_block = self.add_block(block, &prover_router).await;
                     // Check if syncing with this peer is complete.
                     if self
                         .block_requests
@@ -263,7 +316,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                         .unwrap_or(false)
                     {
                         trace!("All block requests with {} have been processed", peer_ip);
-                        self.update_block_requests().await;
+                        self.sync(&prover_router, has_new_block, format!("{} ({:?})", request_name, peer_ip)).await;
                     }
                 }
             }
@@ -274,60 +327,27 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 self.add_failure(peer_ip, failure).await;
             }
             LedgerRequest::Heartbeat(prover_router) => {
-                // Update for sync nodes.
-                self.update_sync_nodes().await;
-                // Update the ledger.
-                self.update_ledger(&prover_router).await;
-                // Update the status of the ledger.
-                self.update_status().await;
-                // Remove expired block requests.
-                self.remove_expired_block_requests().await;
-                // Remove expired failures.
-                self.remove_expired_failures().await;
-                // Disconnect from peers with frequent failures.
-                self.disconnect_from_failing_peers().await;
-                // Update the block requests.
-                self.update_block_requests().await;
-
-                debug!(
-                    "Status Report (type = {}, status = {}, block_height = {}, cumulative_weight = {}, block_requests = {}, connected_peers = {})",
-                    E::NODE_TYPE,
-                    E::status(),
-                    self.canon.latest_block_height(),
-                    self.canon.latest_cumulative_weight(),
-                    self.number_of_block_requests().await,
-                    self.peers_state.read().await.len()
-                );
+                self.sync(&prover_router, false, format!("{}", request_name)).await;
             }
-            LedgerRequest::Pong(peer_ip, node_type, status, is_fork, block_locators) => {
+            LedgerRequest::Pong(peer_ip, node_type, status, is_fork, block_locators, prover_router) => {
                 // Ensure the peer has been initialized in the ledger.
                 self.initialize_peer(peer_ip).await;
                 // Process the pong.
                 self.update_peer(peer_ip, node_type, status, is_fork, block_locators).await;
+                self.sync(&prover_router, false, format!("{} ({:?})", request_name, peer_ip)).await;
             }
             LedgerRequest::UnconfirmedBlock(peer_ip, block, prover_router) => {
-                trace!("Processing 'UnconfirmedBlock {}' from {}", block.height(), peer_ip);
+                trace!(
+                    "Processing 'UnconfirmedBlock {} ({})' from {}",
+                    block.height(),
+                    block.hash(),
+                    peer_ip
+                );
                 // Ensure the node is not peering.
                 if !E::status().is_peering() {
                     // Process the unconfirmed block.
-                    self.add_block(block.clone(), &prover_router).await;
-                    
-                    fn is_global_block_routing_enabled() -> bool {
-                        std::env::var("ALEO_GLOBAL_BLOCK_ROUTING_ENABLED")
-                            .and_then(|v| match v.parse() {
-                                Ok(val) => Ok(val),
-                                Err(_) => Ok(false),
-                            })
-                            .unwrap_or(false)
-                    }
-                    let is_peer_global = match peer_ip.ip() {
-                        IpAddr::V4(ip) => !ip.is_private() && !ip.is_loopback() && !ip.is_link_local(),
-                        IpAddr::V6(ip) => !ip.is_loopback(),
-                    };
-                    if is_peer_global && !is_global_block_routing_enabled() {
-                        trace!("Skip Propagating 'UnconfirmedBlock {}' from {}", block.height(), peer_ip);
-                        return;
-                    }
+                    let has_new_block = self.add_block(block.clone(), &prover_router).await;
+                    self.sync(&prover_router, has_new_block, format!("{} ({:?})", request_name, peer_ip)).await;
 
                     // Propagate the unconfirmed block to the connected peers.
                     let message = Message::UnconfirmedBlock(block.height(), block.hash(), Data::Object(block));
@@ -338,6 +358,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                 }
             }
         }
+        trace!("Processed LedgerRequest '{} ({:?})'", request_name, start.elapsed());
     }
 
     ///
@@ -432,7 +453,8 @@ impl<N: Network, E: Environment> Ledger<N, E> {
     ///
     /// Attempt to fast-forward the ledger with unconfirmed blocks.
     ///
-    async fn update_ledger(&self, prover_router: &ProverRouter<N>) {
+    async fn update_ledger(&self, prover_router: &ProverRouter<N>) -> bool {
+        let mut has_new_block = false;
         // Check for candidate blocks to fast forward the ledger.
         let mut block_hash = self.canon.latest_block_hash();
         let unconfirmed_blocks_snapshot = self.unconfirmed_blocks.read().await.clone();
@@ -440,7 +462,10 @@ impl<N: Network, E: Environment> Ledger<N, E> {
             // Attempt to add the unconfirmed block.
             match self.add_block(unconfirmed_block.clone(), prover_router).await {
                 // Upon success, update the block hash iterator.
-                true => block_hash = unconfirmed_block.hash(),
+                true => {
+                    block_hash = unconfirmed_block.hash();
+                    has_new_block = true;
+                },
                 false => break,
             }
         }
@@ -469,6 +494,8 @@ impl<N: Network, E: Environment> Ledger<N, E> {
             self.revert_to_block_height(self.canon.latest_block_height().saturating_sub(1))
                 .await;
         }
+
+        has_new_block
     }
 
     ///
@@ -521,9 +548,6 @@ impl<N: Network, E: Environment> Ledger<N, E> {
         if status == State::Peering || status == State::Syncing {
             // Set the terminator bit to `true` to ensure it does not mine.
             E::terminator().store(true, Ordering::SeqCst);
-        } else {
-            // Set the terminator bit to `false` to ensure it is allowed to mine.
-            E::terminator().store(false, Ordering::SeqCst);
         }
 
         // Update the ledger to the determined status.
@@ -754,6 +778,7 @@ impl<N: Network, E: Environment> Ledger<N, E> {
                     latest_block_height_of_peer = *block_height;
                 }
             }
+            trace!("Verify the integrity of the block hashes sent by the peer ({:?})", start.elapsed());
 
             // If the given fork status is None, check if it can be updated.
             let is_fork = match is_fork {
