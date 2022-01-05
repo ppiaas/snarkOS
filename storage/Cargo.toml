@@ -66,3 +66,4 @@ version = "3.2"
 [features]
 default = ["rocks"]
 rocks = ["bincode", "rocksdb"]
+cuda = ["snarkvm/cuda"]

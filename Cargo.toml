@@ -22,6 +22,7 @@ members = ["storage", "testing"]
 [features]
 default = []
 test = []
+cuda = ["snarkvm/cuda", "snarkos-storage/cuda"]
 
 [dependencies]
 # snarkvm = { git = "https://github.com/AleoHQ/snarkVM.git", rev = "ff10c20" }
