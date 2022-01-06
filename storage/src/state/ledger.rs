@@ -625,7 +625,7 @@ impl<N: Network> LedgerState<N> {
         let previous_block_hash = latest_block.hash();
         let block_height = latest_block.height().saturating_add(1);
         // Ensure that the new timestamp is ahead of the previous timestamp.
-        let block_timestamp = std::cmp::max(chrono::Utc::now().timestamp(), latest_block.timestamp().saturating_add(1));
+        let block_timestamp = latest_block.timestamp().saturating_add(1);
 
         // Compute the block difficulty target.
         let difficulty_target = if N::NETWORK_ID == 2 && block_height <= snarkvm::dpc::testnet2::V12_UPGRADE_BLOCK_HEIGHT {
