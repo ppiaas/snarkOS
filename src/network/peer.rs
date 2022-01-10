@@ -508,8 +508,38 @@ impl<N: Network, E: Environment> Peer<N, E> {
                             trace!("Received '{}' from {}", message.name(), peer_ip);
                             match message {
                                 Message::BlockRequest(start_block_height, end_block_height) => {
+                                    if start_block_height > end_block_height {
+                                        if let Err(error) = ledger_router.send(LedgerRequest::Failure(peer_ip, format!("{}",
+                                            format!("Invalid starting and ending block heights")))).await {
+                                            warn!("[Failure] {}", error);
+                                        }
+                                        continue;
+                                    }
+                                    let st = Instant::now();
+                                    if start_block_height == end_block_height {
+                                        // Retrieve the requested blocks.
+                                        let block = match ledger_reader.get_block(start_block_height) {
+                                            Ok(block) => block,
+                                            Err(error) => {
+                                                // Route a `Failure` to the ledger.
+                                                if let Err(error) = ledger_router.send(LedgerRequest::Failure(peer_ip, format!("{}", error))).await {
+                                                    warn!("[Failure] {}", error);
+                                                }
+                                                continue;
+                                            }
+                                        };
+                                        debug!("Sending 'BlockResponse {}' to {}", block.height(), peer_ip);
+                                        if let Err(error) = peer.outbound_socket.send(Message::BlockResponse(Data::Object(block))).await {
+                                            warn!("[BlockResponse] {}", error);
+                                            break;
+                                        }
+                                        trace!("p2p blockrequest size:1 [{}..{}] ({:?}) #sync",
+                                            start_block_height, end_block_height,
+                                            st.elapsed());
+                                        continue;
+                                    }
                                     // Ensure the request is within the accepted limits.
-                                    let number_of_blocks = end_block_height.saturating_sub(start_block_height);
+                                    let mut number_of_blocks = end_block_height.saturating_sub(start_block_height);
                                     if number_of_blocks > E::MAXIMUM_BLOCK_REQUEST {
                                         // Route a `Failure` to the ledger.
                                         let failure = format!("Attempted to request {} blocks", number_of_blocks);
@@ -518,22 +548,43 @@ impl<N: Network, E: Environment> Peer<N, E> {
                                         }
                                         continue;
                                     }
-                                    // Retrieve the requested blocks.
-                                    let blocks = match ledger_reader.get_blocks(start_block_height, end_block_height) {
-                                        Ok(blocks) => blocks,
-                                        Err(error) => {
-                                            // Route a `Failure` to the ledger.
-                                            if let Err(error) = ledger_router.send(LedgerRequest::Failure(peer_ip, format!("{}", error))).await {
-                                                warn!("[Failure] {}", error);
+                                    number_of_blocks += 1; // actual total number of blocks
+                                    let (btx, mut brx) = mpsc::channel(number_of_blocks as usize);
+                                    for height in start_block_height..=end_block_height {
+                                        let ledger_reader = ledger_reader.clone();
+                                        let ledger_router = ledger_router.clone();
+                                        let btx = btx.clone();
+                                        task::spawn(async move {
+                                            let block = match ledger_reader.get_block(height) {
+                                                Ok(block) => Some(block),
+                                                Err(error) => {
+                                                    // Route a `Failure` to the ledger.
+                                                    if let Err(error) = ledger_router.send(LedgerRequest::Failure(peer_ip, format!("{}", error))).await {
+                                                        warn!("[Failure] {}", error);
+                                                    }
+
+                                                    None
+                                                }
+                                            };
+                                            let _ = btx.send(block).await;
+                                        });
+                                    }
+
+                                    let mut i = 0;
+                                    loop {
+                                        if let Some(block) = brx.recv().await.unwrap() {
+                                            debug!("Sending 'BlockResponse {}' to {}", block.height(), peer_ip);
+                                            if let Err(error) = peer.outbound_socket.send(Message::BlockResponse(Data::Object(block))).await {
+                                                warn!("[BlockResponse] {}", error);
+                                                break;
                                             }
-                                            continue;
                                         }
-                                    };
-                                    // Send a `BlockResponse` message for each block to the peer.
-                                    for block in blocks {
-                                        debug!("Sending 'BlockResponse {}' to {}", block.height(), peer_ip);
-                                        if let Err(error) = peer.outbound_socket.send(Message::BlockResponse(Data::Object(block))).await {
-                                            warn!("[BlockResponse] {}", error);
+                                        i += 1;
+                                        if i == number_of_blocks {
+                                            trace!("p2p blockrequest size:{} [{}..{}] ({:?}) #async",
+                                                number_of_blocks,
+                                                start_block_height, end_block_height,
+                                                st.elapsed());
                                             break;
                                         }
                                     }
