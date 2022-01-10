@@ -205,23 +205,7 @@ impl<N: Network, E: Environment> Coordinator<N, E> {
                     return;
                 }
 
-                if block.cumulative_weight() > self.latest_block().await.cumulative_weight() {
-                    info!(
-                        "Canonical block {} ({}) (cumulative_weight = {}, connected_peers = {}) from Peer {}",
-                        block.height(),
-                        block.hash(),
-                        block.cumulative_weight(),
-                        self.number_of_connected_peers().await,
-                        peer_ip
-                    );
-                    self.update_latest_block(block.clone()).await;
-                    self.propagate(
-                        peer_ip,
-                        Message::UnconfirmedBlock(block.height(), block.hash(), Data::Object(block)),
-                        |_, _| true,
-                    )
-                    .await;
-                } else {
+                if block.cumulative_weight() <= self.latest_block.read().await.cumulative_weight() {
                     trace!(
                         "UnconfirmedBlock {} ({}) (cumulative_weight = {}) from Peer {}",
                         block.height(),
@@ -229,7 +213,32 @@ impl<N: Network, E: Environment> Coordinator<N, E> {
                         block.cumulative_weight(),
                         peer_ip
                     );
+                    return;
                 }
+
+                let mut latest_block = self.latest_block.write().await;
+                if block.cumulative_weight() <= latest_block.cumulative_weight() {
+                    return;
+                }
+
+                *latest_block = block.clone();
+                drop(latest_block);
+
+                info!(
+                    "Canonical block {} ({}) (cumulative_weight = {}, connected_peers = {}) from Peer {}",
+                    block.height(),
+                    block.hash(),
+                    block.cumulative_weight(),
+                    self.number_of_connected_peers().await,
+                    peer_ip
+                );
+
+                self.propagate(
+                    peer_ip,
+                    Message::UnconfirmedBlock(block.height(), block.hash(), Data::Object(block)),
+                    |_, _| true,
+                )
+                .await;
             }
         }
     }
@@ -251,16 +260,6 @@ impl<N: Network, E: Environment> Coordinator<N, E> {
         if let Err(error) = self.coordinator_router.send(CoordinatorRequest::Disconnected(peer_ip)).await {
             warn!("[Disconnected] {}", error);
         }
-    }
-
-    /// Returns the latest block.
-    pub async fn latest_block(&self) -> Block<N> {
-        self.latest_block.read().await.clone()
-    }
-
-    /// Updates the latest block.
-    pub async fn update_latest_block(&self, block: Block<N>) {
-        *self.latest_block.write().await = block;
     }
 
     ///
