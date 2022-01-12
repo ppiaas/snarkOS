@@ -267,6 +267,7 @@ impl<N: Network, E: Environment> Server<N, E> {
     /// Initialize a new instance of the heartbeat.
     ///
     #[inline]
+    #[allow(unused)]
     async fn initialize_heartbeat(
         peers_router: PeersRouter<N, E>,
         ledger_reader: LedgerReader<N>,

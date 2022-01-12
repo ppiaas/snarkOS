@@ -300,9 +300,10 @@ impl<N: Network, E: Environment> RpcFunctions<N> for RpcImpl<N, E> {
         let number_of_connected_peers = connected_peers.len();
         let number_of_connected_sync_nodes = self.peers.number_of_connected_sync_nodes().await;
 
-        let latest_block_hash = self.ledger.latest_block_hash();
-        let latest_block_height = self.ledger.latest_block_height();
-        let latest_cumulative_weight = self.ledger.latest_cumulative_weight();
+        let latest_block = self.ledger.latest_block();
+        let latest_block_hash = latest_block.hash();
+        let latest_block_height = latest_block.height();
+        let latest_cumulative_weight = latest_block.cumulative_weight();
 
         Ok(serde_json::json!({
             "address": self.address,
