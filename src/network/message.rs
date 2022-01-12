@@ -100,6 +100,8 @@ pub enum Message<N: Network, E: Environment> {
     Pong(Option<bool>, Data<BlockLocators<N>>),
     /// UnconfirmedBlock := (block_height, block_hash, block)
     UnconfirmedBlock(u32, N::BlockHash, Data<Block<N>>),
+    /// ConfirmedBlock := (ledger_root, block)
+    ConfirmedBlock(N::LedgerRoot, Data<Block<N>>),
     /// UnconfirmedTransaction := (transaction)
     UnconfirmedTransaction(Transaction<N>),
     /// PoolRegister := (address)
@@ -128,6 +130,7 @@ impl<N: Network, E: Environment> Message<N, E> {
             Self::Ping(..) => "Ping",
             Self::Pong(..) => "Pong",
             Self::UnconfirmedBlock(..) => "UnconfirmedBlock",
+            Self::ConfirmedBlock(..) => "ConfirmedBlock",
             Self::UnconfirmedTransaction(..) => "UnconfirmedTransaction",
             Self::PoolRegister(..) => "PoolRegister",
             Self::PoolRequest(..) => "PoolRequest",
@@ -150,6 +153,7 @@ impl<N: Network, E: Environment> Message<N, E> {
             Self::Ping(..) => 7,
             Self::Pong(..) => 8,
             Self::UnconfirmedBlock(..) => 9,
+            Self::ConfirmedBlock(..) => 99,
             Self::UnconfirmedTransaction(..) => 10,
             Self::PoolRegister(..) => 11,
             Self::PoolRequest(..) => 12,
@@ -192,6 +196,7 @@ impl<N: Network, E: Environment> Message<N, E> {
                 block.serialize_blocking()?,
             ]
             .concat()),
+            Self::ConfirmedBlock(ledger_root, block) => Ok([ledger_root.to_bytes_le()?, block.serialize_blocking()?].concat()),
             Self::UnconfirmedTransaction(transaction) => Ok(bincode::serialize(transaction)?),
             Self::PoolRegister(address) => Ok(bincode::serialize(address)?),
             Self::PoolRequest(share_difficulty, block_template) => {
@@ -258,6 +263,7 @@ impl<N: Network, E: Environment> Message<N, E> {
                 bincode::deserialize(&data[4..36])?,
                 Data::Buffer(data[36..].to_vec()),
             ),
+            99 => Self::ConfirmedBlock(bincode::deserialize(&data[0..32])?, Data::Buffer(data[32..].to_vec())),
             10 => Self::UnconfirmedTransaction(bincode::deserialize(data)?),
             11 => Self::PoolRegister(bincode::deserialize(data)?),
             12 => Self::PoolRequest(bincode::deserialize(&data[0..8])?, Data::Buffer(data[8..].to_vec())),

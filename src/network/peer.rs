@@ -76,7 +76,7 @@ pub(crate) struct Peer<N: Network, E: Environment> {
     /// The map of transaction IDs to their last seen timestamp.
     seen_inbound_transactions: HashMap<N::TransactionID, SystemTime>,
     /// The map of peers to a map of block hashes to their last seen timestamp.
-    seen_outbound_blocks: HashMap<N::BlockHash, SystemTime>,
+    pub(super) seen_outbound_blocks: HashMap<N::BlockHash, SystemTime>,
     /// The map of peers to a map of transaction IDs to their last seen timestamp.
     seen_outbound_transactions: HashMap<N::TransactionID, SystemTime>,
 }
@@ -141,7 +141,7 @@ impl<N: Network, E: Environment> Peer<N, E> {
     }
 
     /// Create a new instance of `Peer`.
-    pub(super) async fn build(
+    pub(super) async fn open(
         stream: TcpStream,
         local_ip: SocketAddr,
         local_nonce: u64,
@@ -724,6 +724,7 @@ impl<N: Network, E: Environment> Peer<N, E> {
                                         }
                                     }
                                 }
+                                Message::ConfirmedBlock(..) => {}
                                 Message::UnconfirmedTransaction(transaction) => {
                                     // Drop the peer, if they have sent more than 500 unconfirmed transactions in the last 5 seconds.
                                     let frequency = peer.seen_inbound_transactions.values().filter(|t| t.elapsed().unwrap().as_secs() <= 5).count();

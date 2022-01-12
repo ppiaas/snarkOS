@@ -37,3 +37,6 @@ pub use server::{LedgerReader, Server};
 
 pub mod coordinator;
 pub use coordinator::*;
+
+pub mod worker;
+pub use worker::*;
