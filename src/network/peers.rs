@@ -624,13 +624,17 @@ impl<N: Network, E: Environment> Peers<N, E> {
             let _ = std::mem::replace(data, Data::Buffer(serialized_block));
         }
 
-        for (peer_ip, (_, _node_type, _outbound)) in self
+        let peers = self
             .connected_peers
             .read()
             .await
             .iter()
             .filter(|(peer_ip, (_, node_type, _outbound))| *peer_ip != &sender && filter(peer_ip, node_type))
-        {
+            .map(|(peer_ip, (_, _, _))| peer_ip)
+            .copied()
+            .collect::<Vec<_>>();
+
+        for peer_ip in peers {
             self.send(peer_ip.clone(), message.clone()).await;
         }
     }
