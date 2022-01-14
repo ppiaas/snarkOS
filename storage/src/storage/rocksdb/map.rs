@@ -72,7 +72,7 @@ impl<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> Map<'
         K: Borrow<Q>,
         Q: Serialize + ?Sized,
     {
-        self.get(key).map(|v| v.is_some())
+        self.get_raw(key).map(|v| v.is_some())
     }
 
     ///
@@ -83,11 +83,26 @@ impl<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> Map<'
         K: Borrow<Q>,
         Q: Serialize + ?Sized,
     {
+        match self.get_raw(key) {
+            Ok(Some(bytes)) => Ok(Some(bincode::deserialize(&bytes)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    ///
+    /// Returns the raw value for the given key from the map, if it exists.
+    ///
+    fn get_raw<Q>(&self, key: &Q) -> Result<Option<Vec<u8>>>
+    where
+        K: Borrow<Q>,
+        Q: Serialize + ?Sized,
+    {
         let mut key_buf = self.context.clone();
         key_buf.reserve(bincode::serialized_size(&key)? as usize);
         bincode::serialize_into(&mut key_buf, &key)?;
         match self.rocksdb.get(&key_buf)? {
-            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            Some(data) => Ok(Some(data)),
             None => Ok(None),
         }
     }

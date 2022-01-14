@@ -29,6 +29,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
+    convert::TryInto,
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -1302,8 +1303,16 @@ impl<N: Network> BlockState<N> {
 
     /// Returns the block height for the given block hash.
     fn get_block_height(&self, block_hash: &N::BlockHash) -> Result<u32> {
-        match self.block_headers.get(block_hash)? {
-            Some(block_header) => Ok(block_header.height()),
+        // Performance note: this method is using `Storage::get_raw` in order to avoid costly
+        // (and duplicate) proof verification, which happens automatically upon full deserialization.
+        match self.block_headers.get_raw(block_hash)? {
+            Some(raw_block_header) => {
+                // Ensure that any changes to the format don't go unnoticed.
+                debug_assert_eq!(N::NETWORK_ID, 2);
+                let raw_block_height: [u8; 4] = raw_block_header[64..][..4].try_into().unwrap(); // safe - we stored the headers ourself
+                let block_height = u32::from_le_bytes(raw_block_height);
+                Ok(block_height)
+            }
             None => return Err(anyhow!("Block {} missing from block headers map", block_hash)),
         }
     }
