@@ -26,11 +26,10 @@ use crate::{
     PeersRouter,
 };
 use snarkos_storage::{storage::Storage, ProverState};
-use snarkvm::dpc::prelude::*;
+use snarkvm::dpc::{posw::PoSWProof, prelude::*};
 
 use anyhow::{anyhow, Result};
 use rand::thread_rng;
-use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     net::SocketAddr,
     path::Path,
@@ -75,8 +74,6 @@ pub struct Prover<N: Network, E: Environment> {
     address: Option<Address<N>>,
     /// The IP address of the connected pool.
     pool: Option<SocketAddr>,
-    /// The thread pool for the prover.
-    thread_pool: Arc<ThreadPool>,
     /// The prover router of the node.
     prover_router: ProverRouter<N>,
     /// The pool of unconfirmed transactions.
@@ -102,18 +99,11 @@ impl<N: Network, E: Environment> Prover<N, E> {
     ) -> Result<Arc<Self>> {
         // Initialize an mpsc channel for sending requests to the `Prover` struct.
         let (prover_router, mut prover_handler) = mpsc::channel(1024);
-        // Initialize the prover thread pool.
-        let thread_pool = ThreadPoolBuilder::new()
-            .stack_size(8 * 1024 * 1024)
-            .num_threads((num_cpus::get() / 8 * 7).max(1))
-            .build()?;
-
         // Initialize the prover.
         let prover = Arc::new(Self {
             state: Arc::new(ProverState::open_writer::<S, P>(path)?),
             address,
             pool: pool_ip,
-            thread_pool: Arc::new(thread_pool),
             prover_router,
             memory_pool: Arc::new(RwLock::new(MemoryPool::new())),
             peers_router,
@@ -244,11 +234,11 @@ impl<N: Network, E: Environment> Prover<N, E> {
                             // Set the status to `Mining`.
                             E::status().update(State::Mining);
 
-                            let thread_pool = self.thread_pool.clone();
+                            let block_height = block_template.block_height();
                             let block_template = block_template.clone();
 
                             let result = task::spawn_blocking(move || {
-                                thread_pool.install(move || {
+                                E::thread_pool().install(move || {
                                     loop {
                                         let block_header =
                                             BlockHeader::mine_once_unchecked(&block_template, E::terminator(), &mut thread_rng())?;
@@ -260,8 +250,11 @@ impl<N: Network, E: Environment> Prover<N, E> {
                                             &[*block_header.to_header_root().unwrap(), *block_header.nonce()],
                                             block_header.proof(),
                                         ) {
-                                            let proof_difficulty = block_header.proof().to_proof_difficulty()?;
-                                            return Ok::<(BlockHeader<N>, u64), anyhow::Error>((block_header, proof_difficulty));
+                                            return Ok::<(N::PoSWNonce, PoSWProof<N>, u64), anyhow::Error>((
+                                                block_header.nonce(),
+                                                block_header.proof().clone(),
+                                                block_header.proof().to_proof_difficulty()?,
+                                            ));
                                         }
                                     }
                                 })
@@ -271,21 +264,20 @@ impl<N: Network, E: Environment> Prover<N, E> {
                             E::status().update(State::Ready);
 
                             match result {
-                                Ok(Ok((block_header, proof_difficulty))) => {
+                                Ok(Ok((nonce, proof, proof_difficulty))) => {
                                     info!(
                                         "Prover successfully mined a share for unconfirmed block {} with proof difficulty of {}",
-                                        block_header.height(),
-                                        proof_difficulty
+                                        block_height, proof_difficulty
                                     );
 
                                     // Send a `PoolResponse` to the operator.
-                                    let message = Message::PoolResponse(recipient, Data::Object(block_header));
+                                    let message = Message::PoolResponse(recipient, nonce, Data::Object(proof));
                                     if let Err(error) = self.peers_router.send(PeersRequest::MessageSend(operator_ip, message)).await {
                                         warn!("[PoolResponse] {}", error);
                                     }
                                 }
                                 Ok(Err(error)) => trace!("{}", error),
-                                Err(error) => trace!("{}", anyhow!("Could not mine next block {}", error)),
+                                Err(error) => trace!("{}", anyhow!("Failed to mine the next block {}", error)),
                             }
                         }
                     }
@@ -342,7 +334,6 @@ impl<N: Network, E: Environment> Prover<N, E> {
 
                             // Prepare the unconfirmed transactions and dependent objects.
                             let state = prover.state.clone();
-                            let thread_pool = prover.thread_pool.clone();
                             let canon = prover.ledger_reader.clone(); // This is *safe* as the ledger only reads.
                             let unconfirmed_transactions = prover.memory_pool.read().await.transactions();
                             let ledger_router = prover.ledger_router.clone();
@@ -351,7 +342,7 @@ impl<N: Network, E: Environment> Prover<N, E> {
                             {
                                 // Mine the next block.
                                 let result = task::spawn_blocking(move || {
-                                    thread_pool.install(move || {
+                                    E::thread_pool().install(move || {
                                         canon.mine_next_block(
                                             recipient,
                                             E::COINBASE_IS_PUBLIC,
