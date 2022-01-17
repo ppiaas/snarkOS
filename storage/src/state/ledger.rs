@@ -149,7 +149,7 @@ impl<N: Network> LedgerState<N> {
         }
 
         // Check that all canonical block headers exist in storage.
-        let count = ledger.get_block_header_count()?;
+        let count = ledger.blocks.get_block_header_count()?;
         assert_eq!(count, latest_block_height.saturating_add(1));
 
         // TODO (howardwu): TEMPORARY - Remove this after testnet2.
@@ -176,7 +176,7 @@ impl<N: Network> LedgerState<N> {
             let block_hashes = ledger.get_block_hashes(start_block_height, end_block_height)?;
 
             // Split the block hashes into (last_block_hash, [start_block_hash, ..., penultimate_block_hash]).
-            if let Some((end_block_hash, block_hashes_excluding_last)) = block_hashes.split_last() {
+            if let Some((last_block_hash, block_hashes_excluding_last)) = block_hashes.split_last() {
                 // It's possible that the batch only contains one block.
                 if !block_hashes_excluding_last.is_empty() {
                     // Add the block hashes (up to penultimate) to the ledger tree.
@@ -203,7 +203,7 @@ impl<N: Network> LedgerState<N> {
                 }
 
                 // Add the last block hash to the ledger tree.
-                ledger.ledger_tree.write().add(end_block_hash)?;
+                ledger.ledger_tree.write().add(last_block_hash)?;
             }
 
             // Log the progress of the validation procedure.
@@ -444,11 +444,6 @@ impl<N: Network> LedgerState<N> {
         self.blocks.get_block_headers(start_block_height, end_block_height)
     }
 
-    /// Returns the number of all block headers belonging to canonical blocks.
-    pub fn get_block_header_count(&self) -> Result<u32> {
-        self.blocks.get_block_header_count()
-    }
-
     /// Returns the transactions from the block of the given block height.
     pub fn get_block_transactions(&self, block_height: u32) -> Result<Transactions<N>> {
         self.blocks.get_block_transactions(block_height)
@@ -482,6 +477,7 @@ impl<N: Network> LedgerState<N> {
             .latest_block_hashes_and_headers
             .read()
             .asc_iter()
+            .filter(|(_, header)| header.height() != 0) // Skip the genesis block.
             .take(num_block_headers as usize)
             .cloned()
             .map(|(hash, header)| (header.height(), (hash, Some(header))))
@@ -497,7 +493,7 @@ impl<N: Network> LedgerState<N> {
             // Add the genesis locator.
             block_locators.insert(0, (self.get_block_hash(0)?, None));
 
-            return Ok(BlockLocators::<N>::from(block_locators));
+            return BlockLocators::<N>::from(block_locators);
         }
 
         // Determine the number of latest block hashes to include as block locators (power of two).
@@ -521,7 +517,7 @@ impl<N: Network> LedgerState<N> {
         // Add the genesis locator.
         block_locators.insert(0, (self.get_block_hash(0)?, None));
 
-        Ok(BlockLocators::<N>::from(block_locators))
+        BlockLocators::<N>::from(block_locators)
     }
 
     /// Check that the block locators are well formed.
@@ -670,6 +666,11 @@ impl<N: Network> LedgerState<N> {
             })
             .cloned()
             .collect();
+
+        // Enforce that the transaction fee is positive or zero.
+        if transaction_fees.is_negative() {
+            return Err(anyhow!("Invalid transaction fees"));
+        }
 
         // Calculate the final coinbase reward (including the transaction fees).
         coinbase_reward = coinbase_reward.add(transaction_fees);
@@ -1371,11 +1372,9 @@ impl<N: Network> BlockState<N> {
     }
 
     /// Returns the number of all block headers belonging to canonical blocks.
-    pub fn get_block_header_count(&self) -> Result<u32> {
+    fn get_block_header_count(&self) -> Result<u32> {
         let block_hashes = self.block_heights.values().collect::<HashSet<_>>();
-
         let count = self.block_headers.keys().filter(|hash| block_hashes.contains(hash)).count();
-
         Ok(count as u32)
     }
 
