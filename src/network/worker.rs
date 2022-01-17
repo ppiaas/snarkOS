@@ -396,6 +396,23 @@ impl<N: Network, E: Environment> Worker<N, E> {
     pub(super) async fn update(&self, request: WorkerRequest<N, E>) {
         match request {
             WorkerRequest::Connect(peer_ip, connection_result) => {
+                // Ensure the peer IP is not this node.
+                if peer_ip == self.local_ip
+                    || (peer_ip.ip().is_unspecified() || peer_ip.ip().is_loopback()) && peer_ip.port() == self.local_ip.port()
+                {
+                    debug!("Skipping connection request to {} (attempted to self-connect)", peer_ip);
+                    return;
+                }
+                // Ensure the node does not surpass the maximum number of peer connections.
+                else if self.number_of_connected_peers().await >= E::MAXIMUM_NUMBER_OF_PEERS {
+                    debug!("Skipping connection request to {} (maximum peers reached)", peer_ip);
+                    return;
+                }
+                // Ensure the peer is a new connection.
+                if self.is_connected_to(peer_ip).await {
+                    debug!("Skipping connection request to {} (already connected)", peer_ip);
+                    return;
+                }
                 // Initialize the peer handler.
                 match timeout(Duration::from_millis(E::CONNECTION_TIMEOUT_IN_MILLIS), TcpStream::connect(peer_ip)).await {
                     Ok(Ok(stream)) => CoordinatedPeer::handler(stream, self.local_ip, &self.worker_router, Some(connection_result)).await,
@@ -408,6 +425,13 @@ impl<N: Network, E: Environment> Worker<N, E> {
                 };
             }
             WorkerRequest::Connecting(stream, peer_ip) => {
+                // Ensure the peer IP is not this node.
+                if peer_ip == self.local_ip
+                    || (peer_ip.ip().is_unspecified() || peer_ip.ip().is_loopback()) && peer_ip.port() == self.local_ip.port()
+                {
+                    debug!("Skipping connection request to {} (attempted to self-connect)", peer_ip);
+                    return;
+                }
                 // Ensure the node does not surpass the maximum number of peer connections.
                 if self.number_of_connected_peers().await >= E::MAXIMUM_NUMBER_OF_PEERS {
                     debug!("Dropping connection request from {} (maximum peers reached)", peer_ip);
@@ -606,8 +630,6 @@ impl CoordinatedPeer {
             loop {
                 tokio::select! {
                     Some(mut message) = peer.outbound_handler.recv() => {
-                        trace!("Outbound '{}' to {}", message.name(), peer_ip);
-
                         // Ensure sufficient time has passed before needing to send the message.
                         let is_ready_to_send = match message {
                             Message::Ping(_, _, _, _, _, ref mut data) => {
@@ -828,7 +850,7 @@ impl<N: Network, E: Environment> WorkerServer<N, E> {
     /// Starts the connection listener for worker.
     ///
     #[inline]
-    pub async fn initialize(node: &Node, miner: Address<N>) -> Result<Self> {
+    pub async fn initialize(node: &Node, miner: Address<N>, peer_ips: &Vec<String>) -> Result<Self> {
         // Initialize a new TCP listener at the given IP.
         let (local_ip, listener) = match TcpListener::bind(node.node).await {
             Ok(listener) => (listener.local_addr().expect("Failed to fetch the local IP"), listener),
@@ -843,6 +865,38 @@ impl<N: Network, E: Environment> WorkerServer<N, E> {
         // Initialize the connection listener for new peers.
         Self::initialize_listener(local_ip, listener, worker.router(), worker.clone()).await;
 
+        for peer_ip in peer_ips.iter() {
+            // Initialize the connection process.
+            let (router, handler) = oneshot::channel();
+
+            let worker = worker.clone();
+            let peer_ip = peer_ip.parse().unwrap();
+
+            E::tasks().append(task::spawn(async move {
+                // Notify the outer function that the task is ready.
+                let _ = router.send(());
+                loop {
+                    // Initialize the connection process.
+                    let (router, handler) = oneshot::channel();
+
+                    // Route a `Connect` request to the pool.
+                    let request = WorkerRequest::Connect(peer_ip, router);
+                    if let Err(error) = worker.router().send(request).await {
+                        trace!("[Connect] {}", error);
+                    }
+
+                    // Wait until the connection task is initialized.
+                    let _ = handler.await;
+
+                    // Sleep for `10` seconds.
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            }));
+
+            // Wait until the connection task is initialized.
+            let _ = handler.await;
+        }
+
         Ok(Self { local_ip, worker })
     }
 
@@ -854,21 +908,6 @@ impl<N: Network, E: Environment> WorkerServer<N, E> {
     /// Returns the peer manager of this node.
     pub fn worker(&self) -> Arc<Worker<N, E>> {
         self.worker.clone()
-    }
-
-    ///
-    /// Sends a connection request to the given IP address.
-    ///
-    #[inline]
-    pub async fn connect_to(&self, peer_ip: SocketAddr) -> Result<()> {
-        // Initialize the connection process.
-        let (router, handler) = oneshot::channel();
-
-        // Route a `Connect` request to the peer manager.
-        self.worker.router().send(WorkerRequest::Connect(peer_ip, router)).await?;
-
-        // Wait until the connection task is initialized.
-        handler.await.map(|_| ()).map_err(|e| e.into())
     }
 
     ///

@@ -188,7 +188,7 @@ impl Node {
         println!("{}", crate::display::notification_message::<N>(Some(address)));
 
         // Initialize the node's server.
-        let server = WorkerServer::<N, E>::initialize(self, address).await?;
+        let server = WorkerServer::<N, E>::initialize(self, address, &self.connect.as_ref().unwrap()).await?;
 
         // Initialize signal handling; it also maintains ownership of the Server
         // in order for it to not go out of scope.
@@ -196,14 +196,6 @@ impl Node {
         handle_signals_callback(async move {
             server_clone.shut_down().await;
         });
-
-        // Connect to a peer if one was given as an argument.
-        if let Some(peer_ips) = &self.connect {
-            for peer_ip in peer_ips.iter() {
-                debug!("Connecting to {}", peer_ip);
-                let _ = server.connect_to(peer_ip.parse().unwrap()).await;
-            }
-        }
 
         // Note: Do not move this. The pending await must be here otherwise
         // other snarkOS commands will not exit.
@@ -218,7 +210,7 @@ impl Node {
         println!("{}", crate::display::notification_message::<N>(None));
 
         // Initialize the node's server.
-        let server = CoordinatorServer::<N, E>::initialize(self).await?;
+        let server = CoordinatorServer::<N, E>::initialize(self, &self.connect.as_ref().unwrap()).await?;
 
         // Initialize signal handling; it also maintains ownership of the Server
         // in order for it to not go out of scope.
@@ -226,14 +218,6 @@ impl Node {
         handle_signals_callback(async move {
             server_clone.shut_down().await;
         });
-
-        // Connect to a peer if one was given as an argument.
-        if let Some(peer_ips) = &self.connect {
-            for peer_ip in peer_ips.iter() {
-                debug!("Connecting to {}", peer_ip);
-                let _ = server.connect_to(peer_ip.parse().unwrap()).await;
-            }
-        }
 
         // Note: Do not move this. The pending await must be here otherwise
         // other snarkOS commands will not exit.
