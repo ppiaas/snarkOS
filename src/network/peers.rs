@@ -21,7 +21,7 @@ use anyhow::Result;
 use rand::{prelude::IteratorRandom, rngs::OsRng, thread_rng, Rng};
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    net::{SocketAddr, IpAddr},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -372,8 +372,8 @@ impl<N: Network, E: Environment> Peers<N, E> {
                     true => {
                         trace!("Sending request for more peer connections");
                         // Request more peers if the number of connected peers is below the threshold.
-                        for peer_ip in self.connected_peers().await.iter().choose_multiple(&mut OsRng::default(), 3) {
-                            self.send(*peer_ip, Message::PeerRequest).await;
+                        for peer_ip in self.connected_peers().await {
+                            self.send(peer_ip, Message::PeerRequest).await;
                         }
                     }
                     false => return,
@@ -532,7 +532,10 @@ impl<N: Network, E: Environment> Peers<N, E> {
             }
             PeersRequest::SendPeerResponse(recipient) => {
                 // Send a `PeerResponse` message.
-                let connected_peers = self.connected_peers().await;
+                let connected_peers = self.connected_peers().await.iter().filter(|addr| match addr.ip() {
+                    IpAddr::V4(ip) => !ip.is_private(),
+                    IpAddr::V6(_) => true,
+                }).map(|&peer_ip| peer_ip).collect();
                 self.send(recipient, Message::PeerResponse(connected_peers)).await;
             }
             PeersRequest::ReceivePeerResponse(peer_ips) => {
