@@ -332,7 +332,10 @@ impl<N: Network, E: Environment> Peers<N, E> {
                         .read()
                         .await
                         .iter()
-                        .filter(|(peer_ip, _)| !E::sync_nodes().contains(peer_ip) && !E::beacon_nodes().contains(peer_ip))
+                        .filter(|(peer_ip, _)| !E::sync_nodes().contains(peer_ip) && !E::beacon_nodes().contains(peer_ip) && match peer_ip.ip() {
+                            IpAddr::V4(ip) => !ip.is_private(),
+                            IpAddr::V6(_) => true,
+                        })
                         .take(num_excess_peers)
                         .map(|(&peer_ip, _)| peer_ip)
                         .collect::<Vec<SocketAddr>>();
