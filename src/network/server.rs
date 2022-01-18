@@ -162,6 +162,10 @@ impl<N: Network, E: Environment> Server<N, E> {
         // Initialize a new instance of the notification.
         Self::initialize_notification(ledger.reader(), prover.clone(), address).await;
 
+        // Initialise the metrics exporter.
+        #[cfg(feature = "prometheus")]
+        Self::initialize_metrics();
+
         Ok(Self {
             local_ip,
             peers,
@@ -436,5 +440,10 @@ impl<N: Network, E: Environment> Server<N, E> {
         }));
         // Wait until the heartbeat task is ready.
         let _ = handler.await;
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn initialize_metrics() {
+        E::tasks().append(snarkos_metrics::initialize().expect("couldn't initialise the metrics"));
     }
 }
