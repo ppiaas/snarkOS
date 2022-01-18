@@ -59,6 +59,9 @@ pub struct Node {
     /// Specify the IP address and port for the RPC server.
     #[structopt(parse(try_from_str), default_value = "0.0.0.0:3032", long = "rpc")]
     pub rpc: SocketAddr,
+    /// Specify the IP address and port for the Prometheus push gateway.
+    #[structopt(long = "prometheus")]
+    pub prometheus: Option<String>,
     /// Specify the username for the RPC server.
     #[structopt(default_value = "root", long = "username")]
     pub rpc_username: String,
@@ -188,7 +191,7 @@ impl Node {
         println!("{}", crate::display::notification_message::<N>(Some(address)));
 
         // Initialize the node's server.
-        let server = WorkerServer::<N, E>::initialize(self, address, &self.connect.as_ref().unwrap()).await?;
+        let server = WorkerServer::<N, E>::initialize(self, address, &self.connect.as_ref().unwrap(), &self.prometheus).await?;
 
         // Initialize signal handling; it also maintains ownership of the Server
         // in order for it to not go out of scope.
@@ -210,7 +213,7 @@ impl Node {
         println!("{}", crate::display::notification_message::<N>(None));
 
         // Initialize the node's server.
-        let server = CoordinatorServer::<N, E>::initialize(self, &self.connect.as_ref().unwrap()).await?;
+        let server = CoordinatorServer::<N, E>::initialize(self, &self.connect.as_ref().unwrap(), &self.prometheus).await?;
 
         // Initialize signal handling; it also maintains ownership of the Server
         // in order for it to not go out of scope.

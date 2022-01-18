@@ -23,6 +23,7 @@ use snarkvm::dpc::prelude::*;
 use snarkvm::dpc::testnet2::V12_UPGRADE_BLOCK_HEIGHT;
 
 use anyhow::{anyhow, Result};
+use metrics::{gauge, increment_counter};
 use rand::{thread_rng, CryptoRng, Rng};
 use std::{
     collections::HashMap,
@@ -232,6 +233,8 @@ impl<N: Network> WorkerState<N> {
         let template = self.get_block_template(recipient, is_public, transactions, rng)?;
         let coinbase_record = template.coinbase_record().clone();
 
+        gauge!("snarkos_blocks_mining", template.block_height() as f64);
+
         // Mine the next block.
         match Block::mine(&template, terminator, rng) {
             Ok(block) => {
@@ -318,6 +321,8 @@ impl<N: Network, E: Environment> Worker<N, E> {
 
                     match result {
                         Ok(Ok((block, _))) => {
+                            increment_counter!("snarkos_blocks_mined_total");
+                            gauge!("snarkos_blocks_mined", block.height() as f64);
                             debug!(
                                 "Miner has found unconfirmed block {} ({}) (timestamp = {}, cumulative_weight = {}, difficulty_target = {})",
                                 block.height(),
@@ -466,6 +471,8 @@ impl<N: Network, E: Environment> Worker<N, E> {
                 }
 
                 if self.state.add_block(ledger_root, &block) {
+                    E::terminator().store(true, Ordering::SeqCst);
+                    gauge!("snarkos_state_latest_block", block.height() as f64);
                     info!(
                         "Canonical block {} ({}) (cumulative_weight = {}, connected_peers = {}) from Peer {}",
                         block.height(),
@@ -474,7 +481,6 @@ impl<N: Network, E: Environment> Worker<N, E> {
                         self.number_of_connected_peers().await,
                         peer_ip
                     );
-                    E::terminator().store(true, Ordering::SeqCst);
                 } else {
                     trace!(
                         "ConfirmedBlock {} ({}) (cumulative_weight = {}) from Peer {}",
@@ -850,7 +856,8 @@ impl<N: Network, E: Environment> WorkerServer<N, E> {
     /// Starts the connection listener for worker.
     ///
     #[inline]
-    pub async fn initialize(node: &Node, miner: Address<N>, peer_ips: &Vec<String>) -> Result<Self> {
+    #[allow(unused_variables)]
+    pub async fn initialize(node: &Node, miner: Address<N>, peer_ips: &Vec<String>, prometheus_addr: &Option<String>) -> Result<Self> {
         // Initialize a new TCP listener at the given IP.
         let (local_ip, listener) = match TcpListener::bind(node.node).await {
             Ok(listener) => (listener.local_addr().expect("Failed to fetch the local IP"), listener),
@@ -864,6 +871,10 @@ impl<N: Network, E: Environment> WorkerServer<N, E> {
 
         // Initialize the connection listener for new peers.
         Self::initialize_listener(local_ip, listener, worker.router(), worker.clone()).await;
+
+        // Initialise the metrics exporter.
+        #[cfg(feature = "prometheus")]
+        Self::initialize_metrics(prometheus_addr);
 
         for peer_ip in peer_ips.iter() {
             // Initialize the connection process.
@@ -966,5 +977,12 @@ impl<N: Network, E: Environment> WorkerServer<N, E> {
         }));
         // Wait until the listener task is ready.
         let _ = handler.await;
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn initialize_metrics(prometheus_addr: &Option<String>) {
+        if let Some(prometheus_addr) = prometheus_addr {
+            E::tasks().append(snarkos_metrics::initialize_push_gateway(prometheus_addr).expect("couldn't initialise the metrics"));
+        }
     }
 }

@@ -34,6 +34,7 @@ futures = { version = "0.3.19", features = ["thread-pool"] }
 
 crossterm = { version = "0.22" }
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
+metrics = "0.18.0"
 
 [dependencies.snarkos-metrics]
 path = "./metrics"

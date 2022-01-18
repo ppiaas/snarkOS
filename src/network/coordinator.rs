@@ -18,6 +18,7 @@ use crate::{
     helpers::{NodeType, State},
     Data, Environment, Message, Node, OutboundRouter, Peer,
 };
+use metrics::{increment_counter, gauge};
 use snarkvm::dpc::prelude::*;
 use snarkvm::dpc::testnet2::V12_UPGRADE_BLOCK_HEIGHT;
 
@@ -260,6 +261,7 @@ impl<N: Network, E: Environment> Coordinator<N, E> {
                 *self.latest_ledger_root.write().await = ledger_root;
                 drop(latest_block);
 
+                gauge!("snarkos_state_latest_block", block.height() as f64);
                 info!(
                     "Canonical block {} ({}) (cumulative_weight = {}, connected_peers = {}) from Peer {}",
                     block.height(),
@@ -594,6 +596,7 @@ impl CoordinatedPeer {
                 }));
             }
             Message::ConfirmedBlock(ledger_root, block) => {
+                increment_counter!("snarkos_inbound_confirmed_blocks_total");
                 // Perform the deferred non-blocking deserialization of the block.
                 match block.deserialize().await {
                     Ok(block) => {
@@ -668,7 +671,8 @@ impl<N: Network, E: Environment> CoordinatorServer<N, E> {
     /// Starts the connection listener for coordinator.
     ///
     #[inline]
-    pub async fn initialize(node: &Node, peer_ips: &Vec<String>) -> Result<Self> {
+    #[allow(unused_variables)]
+    pub async fn initialize(node: &Node, peer_ips: &Vec<String>, prometheus_addr: &Option<String>) -> Result<Self> {
         // Initialize a new TCP listener at the given IP.
         let (local_ip, listener) = match TcpListener::bind(node.node).await {
             Ok(listener) => (listener.local_addr().expect("Failed to fetch the local IP"), listener),
@@ -682,6 +686,10 @@ impl<N: Network, E: Environment> CoordinatorServer<N, E> {
 
         // Initialize the connection listener for new peers.
         Self::initialize_listener(local_ip, listener, coordinator.router(), coordinator.clone()).await;
+
+        // Initialise the metrics exporter.
+        #[cfg(feature = "prometheus")]
+        Self::initialize_metrics(prometheus_addr);
 
         for peer_ip in peer_ips.iter() {
             // Initialize the connection process.
@@ -784,5 +792,12 @@ impl<N: Network, E: Environment> CoordinatorServer<N, E> {
         }));
         // Wait until the listener task is ready.
         let _ = handler.await;
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn initialize_metrics(prometheus_addr: &Option<String>) {
+        if let Some(prometheus_addr) = prometheus_addr {
+            E::tasks().append(snarkos_metrics::initialize_push_gateway(prometheus_addr).expect("couldn't initialise the metrics"));
+        }
     }
 }

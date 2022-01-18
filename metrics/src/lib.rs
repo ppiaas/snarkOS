@@ -32,3 +32,19 @@ pub fn initialize() -> Option<tokio::task::JoinHandle<()>> {
 
     Some(metrics_exporter_task)
 }
+
+pub fn initialize_push_gateway(addr: &String) -> Option<tokio::task::JoinHandle<()>> {
+    let (recorder, exporter) = PrometheusBuilder::new()
+        .disable_http_listener()
+        .push_gateway_config(addr, std::time::Duration::from_secs(5))
+        .build_with_exporter()
+        .expect("can't build the prometheus exporter");
+
+    metrics::set_boxed_recorder(Box::new(recorder)).expect("can't set the prometheus exporter");
+
+    let metrics_exporter_task = tokio::task::spawn(async move {
+        exporter.await.expect("can't await the prometheus exporter");
+    });
+
+    Some(metrics_exporter_task)
+}

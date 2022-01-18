@@ -21,6 +21,7 @@ version = "0.17"
 
 [dependencies.metrics-exporter-prometheus]
 version = "0.7"
+features = ["push-gateway"]
 
 [dependencies.tokio]
 version = "1"
