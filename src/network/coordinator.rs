@@ -272,11 +272,11 @@ impl<N: Network, E: Environment> Coordinator<N, E> {
                 );
 
                 let message = Message::ConfirmedBlock(ledger_root, Data::Object(block.clone()));
-                self.propagate(peer_ip, message, |_, to_node_type| *to_node_type == NodeType::Worker)
+                self.propagate(peer_ip, message, |_, to_node_type| *to_node_type == NodeType::Worker || *to_node_type == NodeType::Coordinator)
                     .await;
 
                 let message = Message::UnconfirmedBlock(block.height(), block.hash(), Data::Object(block));
-                self.propagate(peer_ip, message, |_, to_node_type| *to_node_type != NodeType::Worker)
+                self.propagate(peer_ip, message, |_, to_node_type| *to_node_type != NodeType::Worker && *to_node_type != NodeType::Coordinator)
                     .await;
             }
             CoordinatorRequest::UnconfirmedBlock(peer_ip, _, block) => {
